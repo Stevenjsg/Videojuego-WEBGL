@@ -1,0 +1,180 @@
+:root {
+  --bg: #0b0b0b;
+  --text: #eaeaea;
+  --muted: rgba(234, 234, 234, 0.65);
+  --panel: rgba(0, 0, 0, 0.45);
+  --panel-border: rgba(255, 255, 255, 0.08);
+  --accent: #d9d9d9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  font-family:
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Arial,
+    sans-serif;
+}
+
+#app {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Aquí va el canvas (renderer.domElement) */
+#game {
+  position: absolute;
+  inset: 0;
+}
+
+/* El canvas debe ocupar toda la pantalla */
+#game canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* HUD encima del canvas */
+#hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* no bloquear clicks del canvas */
+}
+
+/* Bloque arriba izquierda */
+#top-left {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: grid;
+  gap: 10px;
+  width: min(520px, calc(100vw - 28px));
+}
+
+#status,
+#hint {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  backdrop-filter: blur(6px);
+}
+
+#hint {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+/* Centro: crosshair */
+#center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+#crosshair {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  border-radius: 999px;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.18);
+}
+
+/* Overlay (Game Over / Win / Pausa) */
+#overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: auto; /* permite click en botón */
+}
+
+#overlay.hidden {
+  display: none;
+}
+
+#overlay-card {
+  width: min(520px, calc(100vw - 28px));
+  background: rgba(10, 10, 10, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 18px 16px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+#overlay-title {
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+#overlay-text {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.35;
+  margin-bottom: 14px;
+}
+
+#overlay-btn {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+#overlay-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Fade (para sustos/transición) */
+#fade {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+#fade.hidden {
+  display: none;
+}
+#fade.show {
+  display: block;
+  opacity: 0.85;
+}
+.debug {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 12px;
+  line-height: 1.25;
+  color: rgba(234, 234, 234, 0.9);
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  white-space: pre;
+}
+.debug.hidden {
+  display: none;
+}

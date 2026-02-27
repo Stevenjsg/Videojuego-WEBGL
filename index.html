@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terror Three</title>
+  </head>
+
+  <body>
+    <!-- Contenedor del juego (canvas se inserta aquí desde main.ts) -->
+    <div id="app">
+      <div id="game"></div>
+
+      <!-- HUD / UI encima del canvas -->
+      <div id="hud">
+        <div id="top-left">
+          <div id="debug" class="debug hidden"></div>
+          <div id="status">Objetos: <span id="items">0</span>/<span id="itemsTotal">0</span></div>
+          <div id="hint">WASD para moverte. Click para capturar ratón.</div>
+        </div>
+
+        <div id="center">
+          <div id="crosshair"></div>
+        </div>
+
+        <!-- Mensajes grandes (game over / win / etc.) -->
+        <div id="overlay" class="hidden">
+          <div id="overlay-card">
+            <div id="overlay-title">PAUSA</div>
+            <div id="overlay-text">Pulsa ESC para liberar el ratón.</div>
+            <button id="overlay-btn">Reiniciar</button>
+          </div>
+        </div>
+
+        <!-- Fade oscuro para sustos o transiciones -->
+        <div id="fade" class="hidden"></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
