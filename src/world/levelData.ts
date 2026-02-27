@@ -1,4 +1,4 @@
-export const LEVEL1_SPAWN: [number, number, number] = [13, 1.7, 3.45];
+export const LEVEL1_SPAWN: [number, number, number] = [-0.92, 1.7, 3.36];
 export type BoxColliderCenterDef = {
   name: string;
   center: [number, number, number];
@@ -22,4 +22,7 @@ export const LEVEL1_COLLIDERS: BoxColliderCenterDef[] = [
 
   //table
   { name: "table", center: [0.04, 0.85, 1.53], size: [1.9, 0.01, 1] },
+  //sillas
+  { name: "chair1", center: [0.5, 0.65, 0.9], size: [0.3, 0.01, 0.3] },
+  { name: "chair2", center: [-0.25, 0.65, 0.9], size: [0.3, 0.01, 0.3] },
 ];

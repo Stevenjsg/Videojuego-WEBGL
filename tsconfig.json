@@ -22,8 +22,26 @@
         "paths": {
             "@/*": [
                 "src/*"
+            ],
+            "@core/*": [
+                "src/core/*"
+            ],
+            "@game/*": [
+                "src/game/*"
+            ],
+            "@entities/*": [
+                "src/entities/*"
+            ],
+            "@systems/*": [
+                "src/systems/*"
+            ],
+            "@world/*": [
+                "src/world/*"
+            ],
+            "@utils/*": [
+                "src/utils/*"
             ]
-        },
+        }
     },
     "include": [
         "src"
