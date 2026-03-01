@@ -1,4 +1,4 @@
-export const LEVEL1_SPAWN: [number, number, number] = [-0.92, 1.7, 3.36];
+export const LEVEL1_SPAWN: [number, number, number] = [13.35, 1.7, 3.6];
 export type BoxColliderCenterDef = {
   name: string;
   center: [number, number, number];

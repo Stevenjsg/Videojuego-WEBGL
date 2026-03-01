@@ -7,61 +7,69 @@ import { Input } from "@core/Input";
 import { Player } from "@entities/Player";
 import { Enemy } from "@entities/Enemy";
 import { loadLevel1 } from "@world/Level1";
+import { loadEXREnvironment } from "@world/sky";
 import { CollisionSystem } from "@systems/CollisionSystem";
 import { ControlsSystem } from "@systems/ControlsSystem";
 import { UISystem } from "@systems/UISystem";
+import { EnemySystem } from "@systems/EnemySystem";
+import { Debugger } from "@/utils/debugger";
+import { PostFXSystem } from "@systems/PostFXSystem";
 
-export type GameUI = {
-  items: HTMLSpanElement;
-  itemsTotal: HTMLSpanElement;
-  overlay: HTMLDivElement;
-  overlayTitle: HTMLDivElement;
-  overlayText: HTMLDivElement;
-  overlayBtn: HTMLButtonElement;
-  fade: HTMLDivElement;
-};
-
-type GameState = "LOADING" | "PLAYING" | "GAME_OVER";
+import type { GameUI, GameState } from "./types";
+import { GAME } from "./constants";
+import { hideOverlay, setGameOverUI } from "./state";
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
 
+  private postFX!: PostFXSystem;
+
   private time = new Time();
   private input = new Input();
 
   private controls!: ControlsSystem;
   private player!: Player;
+
   private enemy!: Enemy;
+  private enemySystem!: EnemySystem;
 
   private uiSystem: UISystem;
+  private debugger: Debugger;
 
   private collision = new CollisionSystem({
-    playerRadius: 0.3, // un pelín más cómodo en interiores
-    playerHeight: 1.7,
+    playerRadius: GAME.PLAYER.RADIUS,
+    playerHeight: GAME.PLAYER.HEIGHT,
     useSlide: true,
   });
 
-  private prevPos = new THREE.Vector3();
-  private enemyPrev = new THREE.Vector3();
-  private tmpBefore = new THREE.Vector3();
-  private tmpP = new THREE.Vector3();
-  private tmpPrev = new THREE.Vector3();
+  private hdriRT: THREE.WebGLRenderTarget | null = null;
 
+  private prevPos = new THREE.Vector3();
   private raf = 0;
   private state: GameState = "LOADING";
+
+  // debug jumps
+  private debugInitialized = false;
+  private lastPos = new THREE.Vector3();
+  private lastYaw = 0;
 
   constructor(
     private mount: HTMLElement,
     private ui: GameUI,
   ) {
-    this.renderer = createRenderer(this.mount);
+    this.renderer = this.createAndConfigureRenderer();
     this.scene = createScene();
     this.camera = createCamera(this.mount);
 
     this.uiSystem = new UISystem(this.ui);
-    this.uiSystem.toggleDebug(true);
+    this.debugger = new Debugger({
+      debugEl:
+        this.ui.debug ??
+        (document.getElementById("debug") as HTMLDivElement | null),
+      enabled: false,
+    });
 
     this.bindUI();
     this.bindResize();
@@ -77,10 +85,23 @@ export class Game {
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.onResize);
     this.input.dispose();
+
+    this.hdriRT?.dispose();
+    this.hdriRT = null;
+
     this.renderer.dispose();
   }
 
-  // -------------------- init --------------------
+  // -------------------- setup --------------------
+
+  private createAndConfigureRenderer() {
+    const r = createRenderer(this.mount);
+    r.outputColorSpace = THREE.SRGBColorSpace;
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 0.3;
+    r.setPixelRatio(Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP));
+    return r;
+  }
 
   private bindUI() {
     this.ui.overlayBtn.addEventListener("click", () => location.reload());
@@ -92,44 +113,103 @@ export class Game {
   }
 
   private async initWorld() {
-    this.initControlsAndEntities();
-    await this.initLevelAndColliders();
+    this.initControls();
+    this.initPostFX();
+
+    await this.initEnvironment();
+    this.initEntities();
+
+    const { colliders, spawn } = await this.initLevel();
+    this.initCollisions(colliders);
+
+    this.initSpawn(spawn);
+
     this.initUI();
   }
 
-  private initControlsAndEntities() {
-    this.controls = new ControlsSystem(this.camera, this.mount, this.input);
-    this.scene.add(this.controls.object);
+  private initControls() {
+    this.controls = new ControlsSystem(this.camera, this.mount, this.input, {
+      canLock: () => this.ui.overlay.classList.contains("hidden"),
+      sensitivity: 0.002,
+      maxMouseDelta: 60,
+      ignoreMouseEvents: 2,
+    });
 
+    // MUY IMPORTANTE: player root a la escena (no metas enemigo aquí)
+    this.scene.add(this.controls.object);
+  }
+
+  private initPostFX() {
+    this.postFX = new PostFXSystem(this.renderer, this.scene, this.camera, {
+      grainIntensity: 0.8,
+      grayscale: false,
+    });
+  }
+
+  private async initEnvironment() {
+    this.hdriRT = await loadEXREnvironment(
+      this.renderer,
+      this.scene,
+      GAME.HDRI.URL,
+      {
+        setBackground: false,
+        intensity: GAME.HDRI.INTENSITY,
+      },
+    );
+  }
+
+  private initEntities() {
     this.player = new Player(this.camera, this.controls.object.position);
 
     this.enemy = new Enemy(this.scene, {
-      url: "/models/enemy/azure_automaton.glb",
-      scale: 0.6,
-      speed: 1.5,
-      catchDistance: 1,
-      watchDotThreshold: 0.1,
+      url: GAME.ENEMY.URL,
+      scale: GAME.ENEMY.SCALE,
     });
 
-    this.enemy.position.set(0, 0, -6);
+    this.enemy.position.set(
+      GAME.ENEMY.SPAWN.x,
+      GAME.ENEMY.SPAWN.y,
+      GAME.ENEMY.SPAWN.z,
+    );
+
+    this.enemySystem = new EnemySystem(this.enemy, this.collision, {
+      speed: GAME.ENEMY.SPEED,
+      catchDistance: GAME.ENEMY.CATCH_DISTANCE,
+      watchDotThreshold: GAME.ENEMY.WATCH_DOT,
+    });
+    const windowPoint = new THREE.Vector3(5, 0, -2); // ajusta
+    const dir = windowPoint.clone().sub(this.enemy.position);
+    dir.y = 0;
+    dir.normalize();
+    this.enemy.root.rotation.y = Math.atan2(dir.x, dir.z);
   }
 
-  private async initLevelAndColliders() {
-    const { colliders, spawn } = await loadLevel1(this.scene, {
-      url: "/models/apartment/ModernApartment.glb",
-      debug: true,
+  private async initLevel() {
+    return await loadLevel1(this.scene, {
+      url: GAME.LEVEL1.URL,
+      debug: GAME.LEVEL1.DEBUG,
     });
+  }
 
+  private initCollisions(colliders: THREE.Box3[]) {
     this.collision.setColliders(colliders);
+    this.debugger.setColliders(this.scene, colliders);
+  }
 
-    const safeSpawn = this.findSafeSpawn(spawn);
-    this.player.position.copy(safeSpawn);
+  private initSpawn(spawn: THREE.Vector3) {
+    this.player.position.copy(spawn);
+    this.controls.object.rotation.y = Math.PI / 2;
+
+    // init jump debugger
+    this.lastPos.copy(this.player.position);
+    this.lastYaw = this.controls.object.rotation.y;
+    this.debugInitialized = true;
   }
 
   private initUI() {
-    this.ui.itemsTotal.textContent = "5";
+    this.ui.itemsTotal.textContent = String(GAME.UI.ITEMS_TOTAL);
     this.ui.items.textContent = "0";
-    this.ui.overlay.classList.add("hidden");
+    hideOverlay(this.ui);
   }
 
   // -------------------- loop --------------------
@@ -138,21 +218,35 @@ export class Game {
     const dt = this.time.update();
 
     if (this.state === "PLAYING") {
-      this.updatePlayer(dt);
-      this.updateEnemy(dt);
-      this.uiSystem.update(this.player.position, this.camera);
+      this.update(dt);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    this.postFX.render();
     this.raf = requestAnimationFrame(this.loop);
   };
 
+  private update(dt: number) {
+    this.controls.update();
+    this.updatePlayer(dt);
+
+    const caught = this.enemySystem.update(
+      dt,
+      this.camera,
+      this.player.position,
+    );
+    if (caught) this.setGameOver();
+
+    this.uiSystem.update(this.player.position, this.camera);
+    this.debugger.update(this.player.position, this.camera);
+
+    if (this.debugInitialized) this.debugJumps();
+  }
+
   private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();
-    const speed = 4.0 * this.controls.getSpeedMultiplier();
+    const speed = GAME.PLAYER.BASE_SPEED * this.controls.getSpeedMultiplier();
 
-    // substeps para evitar “TP” en paredes
-    const steps = 3;
+    const steps = GAME.PLAYER.SUBSTEPS;
     const stepDt = dt / steps;
 
     for (let i = 0; i < steps; i++) {
@@ -162,63 +256,49 @@ export class Game {
     }
   }
 
-  private updateEnemy(dt: number) {
-    this.enemyPrev.copy(this.enemy.position);
+  private setGameOver() {
+    if (this.state === "GAME_OVER") return;
+    this.state = "GAME_OVER";
+    this.controls.unlock();
+    setGameOverUI(this.ui);
+  }
 
-    const caught = this.enemy.update(dt, this.camera, this.player.position);
+  // -------------------- debug --------------------
 
-    this.collision.resolveSphere(
-      this.enemy.position,
-      this.enemyPrev,
-      this.enemy.radius,
+  private debugJumps() {
+    const pos = this.player.position;
+    const d = pos.distanceTo(this.lastPos);
+
+    const yaw = this.controls.object.rotation.y;
+    const dyaw = Math.abs(
+      THREE.MathUtils.euclideanModulo(
+        yaw - this.lastYaw + Math.PI,
+        Math.PI * 2,
+      ) - Math.PI,
     );
 
-    if (caught && this.state !== "GAME_OVER") {
-      this.setGameOver();
+    if (d > 0.6) {
+      console.warn(
+        "[JUMP POS]",
+        d.toFixed(3),
+        "pos",
+        pos.toArray(),
+        "prev",
+        this.lastPos.toArray(),
+      );
     }
-  }
-
-  private setGameOver() {
-    this.state = "GAME_OVER";
-    this.ui.overlay.classList.remove("hidden");
-    this.ui.overlayTitle.textContent = "TE ATRAPÓ";
-    this.ui.overlayText.textContent = "No lo pierdas de vista.";
-    // Opcional: liberar mouse
-    this.controls.unlock?.();
-  }
-
-  // -------------------- spawn utils --------------------
-
-  private findSafeSpawn(initial: THREE.Vector3) {
-    // Reutiliza temporales (sin clones)
-    this.tmpP.copy(initial);
-    this.tmpPrev.copy(initial);
-
-    const steps = [0, 0.5, 1, 1.5, 2, 3, 4];
-    const angles = 16;
-
-    for (const r of steps) {
-      for (let i = 0; i < angles; i++) {
-        const a = (i / angles) * Math.PI * 2;
-
-        this.tmpP.set(
-          initial.x + Math.cos(a) * r,
-          initial.y,
-          initial.z + Math.sin(a) * r,
-        );
-
-        this.tmpPrev.copy(this.tmpP);
-
-        // resolver y comprobar si “rebota”
-        this.tmpBefore.copy(this.tmpP);
-        this.collision.resolvePlayer(this.tmpP, this.tmpPrev);
-
-        const movedBack = this.tmpP.distanceToSquared(this.tmpBefore) > 1e-8;
-        if (!movedBack) return this.tmpP.clone(); // devolvemos una copia estable
-      }
+    if (dyaw > 1.5) {
+      console.warn(
+        "[JUMP YAW]",
+        ((dyaw * 180) / Math.PI).toFixed(1),
+        "deg",
+        "yaw",
+        yaw.toFixed(3),
+      );
     }
 
-    return new THREE.Vector3(0, 1.7, 10);
+    this.lastPos.copy(pos);
+    this.lastYaw = yaw;
   }
 
   // -------------------- resize --------------------
@@ -226,9 +306,13 @@ export class Game {
   private onResize = () => {
     const w = this.mount.clientWidth;
     const h = this.mount.clientHeight;
+
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h, false);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+
+    this.postFX?.setSize(w, h);
+    this.renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP),
+    );
   };
 }

@@ -63,6 +63,7 @@ export class CollisionSystem {
 
   resolvePlayer(playerPos: THREE.Vector3, prevPos: THREE.Vector3) {
     // MVP: sin físicas, fijamos altura
+    const before = this.tmpTryX.copy(playerPos); // reutiliza un vec temp si quieres
     playerPos.y = this.playerHeight;
 
     if (!this.useSlide) {
@@ -71,6 +72,14 @@ export class CollisionSystem {
     }
 
     this.tmpMove.copy(playerPos).sub(prevPos);
+
+    // clamp para evitar penetración grande en un frame
+    const maxStep = 0.25; // ajusta 0.2-0.35
+    const len = this.tmpMove.length();
+    if (len > maxStep) {
+      this.tmpMove.multiplyScalar(maxStep / len);
+      playerPos.copy(prevPos).add(this.tmpMove);
+    }
 
     // si el movimiento completo no colisiona, ok
     if (!this.intersectsAny(playerPos)) return;
@@ -84,6 +93,15 @@ export class CollisionSystem {
     if (this.intersectsAny(this.tmpTryZ)) this.tmpTryZ.z = prevPos.z;
 
     playerPos.copy(this.tmpTryZ);
+
+    const jump = playerPos.distanceTo(before);
+    if (jump > 0.5) {
+      console.log("[COLLISION] big correction:", jump.toFixed(3), {
+        prev: prevPos.toArray(),
+        before: before.toArray(),
+        after: playerPos.toArray(),
+      });
+    }
 
     // fallback duro
     if (this.intersectsAny(playerPos)) playerPos.copy(prevPos);
@@ -150,12 +168,7 @@ export class CollisionSystem {
 
   private isFloorLike(c: Collider) {
     const n = c.name;
-    if (n.includes("floor") || n.includes("ground") || n.includes("terrain"))
-      return true;
-
-    const s = this.getSize(c.box);
-    // placa fina y grande en X/Z
-    return s.y > 0 && s.y < 0.25 && (s.x > 2 || s.z > 2);
+    return n.includes("floor") || n.includes("ground") || n.includes("terrain");
   }
 
   private isBadCollider(c: Collider) {
@@ -195,6 +208,14 @@ export class CollisionSystem {
 
   resolveSphere(pos: THREE.Vector3, prevPos: THREE.Vector3, radius: number) {
     this.tmpMove.copy(pos).sub(prevPos);
+
+    // clamp para evitar penetración grande en un frame
+    const maxStep = 0.25; // ajusta 0.2-0.35
+    const len = this.tmpMove.length();
+    if (len > maxStep) {
+      this.tmpMove.multiplyScalar(maxStep / len);
+      pos.copy(prevPos).add(this.tmpMove);
+    }
 
     if (!this.intersectsSphere(pos, radius)) return;
 
