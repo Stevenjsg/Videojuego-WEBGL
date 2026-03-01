@@ -57,3 +57,8 @@ export const LEVEL1_COLLIDERS: BoxColliderCenterDef[] = [
   { name: "vater", center: [6.8, 0.3, 0.325], size: [0.7, 0.6, 0.5] },
   { name: "vater", center: [6.75, 0.4, 1.2], size: [0.5, 0.8, 1] },
 ];
+export const PICKUPS = [
+  { type: "flashlight", pos: [0.5, 0.9, 2.0], scale: 1.0 },
+  { type: "battery", pos: [2.5, 0.9, -1.0], scale: 1.0, amount: 0.25 },
+  { type: "battery", pos: [-3.0, 0.9, 1.2], scale: 1.0, amount: 0.25 },
+] as const;

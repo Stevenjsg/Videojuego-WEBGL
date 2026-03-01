@@ -14,6 +14,11 @@ import { UISystem } from "@systems/UISystem";
 import { EnemySystem } from "@systems/EnemySystem";
 import { Debugger } from "@/utils/debugger";
 import { PostFXSystem } from "@systems/PostFXSystem";
+import { Flashlight } from "@entities/Flashlight";
+import { Pickup } from "@entities/Pickup";
+import { InteractSystem } from "@systems/InteractSystem";
+import { InventorySystem } from "@systems/InventorySystem";
+import { PICKUPS } from "@world/levelData";
 
 import type { GameUI, GameState } from "./types";
 import { GAME } from "./constants";
@@ -54,6 +59,11 @@ export class Game {
   private debugInitialized = false;
   private lastPos = new THREE.Vector3();
   private lastYaw = 0;
+
+  private flashlight!: Flashlight;
+  private inventory!: InventorySystem;
+  private pickups: Pickup[] = [];
+  private interact!: InteractSystem;
 
   constructor(
     private mount: HTMLElement,
@@ -182,6 +192,35 @@ export class Game {
     dir.y = 0;
     dir.normalize();
     this.enemy.root.rotation.y = Math.atan2(dir.x, dir.z);
+
+    // Linterna (equipo en cámara)
+    this.flashlight = new Flashlight(this.camera, {
+      url: "/models/assets/flashlight.glb",
+      intensity: 3.0,
+      distance: 18,
+      batteryDrainPerSec: 0.02,
+    });
+    this.inventory = new InventorySystem(this.flashlight);
+
+    // Pickups en el mundo
+    this.pickups = PICKUPS.map(
+      (p) =>
+        new Pickup({
+          type: p.type as any,
+          url:
+            p.type === "flashlight"
+              ? "/models/assets/flashlight.glb"
+              : "/models/assets/battery.glb",
+          position: new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]),
+          scale: p.scale ?? 1,
+          batteryAmount: (p as any).amount ?? 0.25,
+        }),
+    );
+
+    for (const p of this.pickups) this.scene.add(p.root);
+
+    // Interacciones
+    this.interact = new InteractSystem(this.camera, this.pickups);
   }
 
   private async initLevel() {
@@ -229,19 +268,39 @@ export class Game {
     this.controls.update();
     this.updatePlayer(dt);
 
+    // --- gameplay input ---
+    // Toggle linterna
+    if (this.input.justPressed("KeyF")) {
+      this.flashlight.toggle();
+    }
+
+    // Interactuar
+    if (this.input.justPressed("KeyE")) {
+      const picked = this.interact.tryPickup(2.0);
+      if (picked) {
+        if (picked.type === "flashlight") this.inventory.pickupFlashlight();
+        else this.inventory.pickupBattery(picked.batteryAmount);
+
+        this.interact.removePickup(picked, this.scene);
+      }
+    }
+
+    this.flashlight.update(dt);
+
+    // enemy: pásale flashlightOn para tu regla
     const caught = this.enemySystem.update(
       dt,
       this.camera,
       this.player.position,
     );
+
     if (caught) this.setGameOver();
 
     this.uiSystem.update(this.player.position, this.camera);
     this.debugger.update(this.player.position, this.camera);
 
-    if (this.debugInitialized) this.debugJumps();
+    this.input.endFrame?.(); // si existe en tu Input
   }
-
   private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();
     const speed = GAME.PLAYER.BASE_SPEED * this.controls.getSpeedMultiplier();
