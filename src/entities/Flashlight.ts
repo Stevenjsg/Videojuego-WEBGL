@@ -48,7 +48,6 @@ export class Flashlight {
     targetObj.position.set(0, 0, -1);
     this.camera.add(targetObj);
     this.light.target = targetObj;
-
     this.root.add(this.light);
 
     // modelo GLB (opcional, puro cosmetic)
@@ -67,7 +66,7 @@ export class Flashlight {
 
     // posición relativa a la cámara (ajusta a gusto)
     this.root.position.set(0.18, -0.18, -0.35);
-    this.root.rotation.set(0, Math.PI, 0);
+    this.root.rotation.set(0, Math.PI / 2, 0);
   }
 
   toggle() {
@@ -127,7 +126,7 @@ export class Flashlight {
           }
         });
         // escalar si hace falta
-        model.scale.setScalar(0.6);
+        model.scale.setScalar(0.1);
         this.root.add(model);
         this.loaded = true;
       },
