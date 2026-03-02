@@ -10,7 +10,13 @@
     <!-- Contenedor del juego (canvas se inserta aquí desde main.ts) -->
     <div id="app">
       <div id="game"></div>
-
+      <div id="loading" class="loading">
+        <div class="loading-card">
+          <div class="loading-title">Cargando…</div>
+          <div class="loading-bar"><div id="loading-bar-fill"></div></div>
+          <div id="loading-text" class="loading-text">0%</div>
+        </div>
+      </div>
       <!-- HUD / UI encima del canvas -->
       <div id="hud">
         <div id="top-left">
