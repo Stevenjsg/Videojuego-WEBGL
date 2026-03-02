@@ -1,3 +1,4 @@
+import { loadingManager } from "@/core/assets";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
@@ -28,7 +29,7 @@ export class Pickup {
   }
 
   private load(url: string, scale: number) {
-    const loader = new GLTFLoader();
+    const loader = new GLTFLoader(loadingManager);
     loader.load(
       url,
       (g) => {

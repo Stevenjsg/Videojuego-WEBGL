@@ -1,3 +1,4 @@
+import { loadingManager } from "@/core/assets";
 import * as THREE from "three";
 import { EXRLoader } from "three/examples/jsm/loaders/EXRLoader.js";
 
@@ -14,7 +15,7 @@ export async function loadEXREnvironment(
   pmrem.compileEquirectangularShader();
 
   const exrTex = await new Promise<THREE.DataTexture>((resolve, reject) => {
-    new EXRLoader().load(exrUrl, resolve, undefined, reject);
+    new EXRLoader(loadingManager).load(exrUrl, resolve, undefined, reject);
   });
 
   exrTex.mapping = THREE.EquirectangularReflectionMapping;

@@ -23,6 +23,7 @@ import { PICKUPS } from "@world/levelData";
 import type { GameUI, GameState } from "./types";
 import { GAME } from "./constants";
 import { hideOverlay, setGameOverUI } from "./state";
+import { bindLoadingUI } from "@/core/assets";
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -86,6 +87,7 @@ export class Game {
   }
 
   async start() {
+    bindLoadingUI();
     await this.initWorld();
     this.state = "PLAYING";
     this.loop();
@@ -108,7 +110,7 @@ export class Game {
     const r = createRenderer(this.mount);
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.toneMapping = THREE.ACESFilmicToneMapping;
-    r.toneMappingExposure = 0.3;
+    r.toneMappingExposure = 0.6;
     r.setPixelRatio(Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP));
     return r;
   }
@@ -196,9 +198,15 @@ export class Game {
     // Linterna (equipo en cámara)
     this.flashlight = new Flashlight(this.camera, {
       url: "/models/assets/flashlight.glb",
-      intensity: 3.0,
-      distance: 18,
-      batteryDrainPerSec: 0.02,
+      angle: 0.35,
+      penumbra: 0.15,
+      intensity: 6,
+      decay: 1.2,
+      distance: 12,
+      batteryDrainPerSec: 0.01,
+      modelScale: 0.15,
+      muzzlePos: new THREE.Vector3(0.02, -0.03, -0.22),
+      targetDistance: 6.0,
     });
     this.inventory = new InventorySystem(this.flashlight);
 

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { LEVEL1_COLLIDERS, LEVEL1_SPAWN } from "./levelData";
+import { loadingManager } from "@/core/assets";
 
 export type NamedBoxCollider = {
   name: string;
@@ -54,7 +55,7 @@ export async function loadLevel1(
 // -------------------- helpers --------------------
 
 async function loadGLB(url: string): Promise<THREE.Object3D> {
-  const loader = new GLTFLoader();
+  const loader = new GLTFLoader(loadingManager);
   return await new Promise<THREE.Object3D>((resolve, reject) => {
     loader.load(url, (g) => resolve(g.scene), undefined, reject);
   });
