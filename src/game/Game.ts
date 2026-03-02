@@ -183,16 +183,7 @@ export class Game {
     // 2) HDRI (sin barra exacta, pero con “fase”)
     setStage("Cargando iluminación…");
     setTitle("Cargando iluminación…");
-    this.hdriRT = await loadEXREnvironment(
-      this.renderer,
-      this.scene,
-      GAME.HDRI.URL,
-      {
-        setBackground: false,
-        intensity: GAME.HDRI.INTENSITY,
-      },
-    );
-
+    await this.initEnvironment();
     // 3) Entidades + colisiones + UI
     this.initEntities();
     this.initCollisions(colliders);

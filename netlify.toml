@@ -1,0 +1,9 @@
+[[headers]]
+  for = "/models/*"
+  [headers.values]
+    Cache-Control = "public, max-age=259200"
+
+[[headers]]
+  for = "/hdri/*"
+  [headers.values]
+    Cache-Control = "public, max-age=259200"
