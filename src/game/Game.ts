@@ -6,7 +6,7 @@ import { Time } from "@core/Time";
 import { Input } from "@core/Input";
 import { Player } from "@entities/Player";
 import { Enemy } from "@entities/Enemy";
-import { loadLevel1 } from "@world/Level1";
+import { loadLevel1, loadLevel1FromRoot } from "@world/Level1";
 import { loadEXREnvironment } from "@world/sky";
 import { CollisionSystem } from "@systems/CollisionSystem";
 import { ControlsSystem } from "@systems/ControlsSystem";
@@ -19,6 +19,8 @@ import { Pickup } from "@entities/Pickup";
 import { InteractSystem } from "@systems/InteractSystem";
 import { InventorySystem } from "@systems/InventorySystem";
 import { PICKUPS } from "@world/levelData";
+import { downloadWithProgress } from "@core/download";
+import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
 import type { GameUI, GameState } from "./types";
 import { GAME } from "./constants";
@@ -125,18 +127,59 @@ export class Game {
   }
 
   private async initWorld() {
+    const loadingEl = document.getElementById("loading");
+    const fill = document.getElementById("loading-bar-fill") as HTMLDivElement;
+    const text = document.getElementById("loading-text") as HTMLDivElement;
+
+    const setProgress = (p: number) => {
+      fill.style.width = `${Math.round(p * 100)}%`;
+      text.textContent = `${Math.round(p * 100)}%`;
+    };
+    const setStage = (s: string) => (text.textContent = s);
+
+    loadingEl?.classList.remove("hidden");
+    setProgress(0);
+    setStage("Preparando…");
+
+    // Controles y postFX pueden crearse ya (no descargan)
     this.initControls();
     this.initPostFX();
 
-    await this.initEnvironment();
+    // 1) DESCARGA + PARSEO NIVEL
+    setStage("Descargando nivel…");
+    const levelBlob = await downloadWithProgress(GAME.LEVEL1.URL, (p) => {
+      if (p.ratio != null) setProgress(p.ratio * 0.6); // 60% del total
+    });
+
+    setStage("Procesando nivel…");
+    const levelRoot = await loadGLBFromBlob(levelBlob, setStage);
+
+    // En vez de loadLevel1() (que recarga), usa fromRoot:
+    const { colliders, spawn } = loadLevel1FromRoot(this.scene, levelRoot, {
+      debug: GAME.LEVEL1.DEBUG,
+    });
+
+    // 2) HDRI (sin barra exacta, pero con “fase”)
+    setStage("Cargando iluminación…");
+    this.hdriRT = await loadEXREnvironment(
+      this.renderer,
+      this.scene,
+      GAME.HDRI.URL,
+      {
+        setBackground: false,
+        intensity: GAME.HDRI.INTENSITY,
+      },
+    );
+
+    // 3) Entidades + colisiones + UI
     this.initEntities();
-
-    const { colliders, spawn } = await this.initLevel();
     this.initCollisions(colliders);
-
     this.initSpawn(spawn);
-
     this.initUI();
+
+    setProgress(1);
+    setStage("Listo");
+    setTimeout(() => loadingEl?.classList.add("hidden"), 200);
   }
 
   private initControls() {
@@ -153,7 +196,7 @@ export class Game {
 
   private initPostFX() {
     this.postFX = new PostFXSystem(this.renderer, this.scene, this.camera, {
-      grainIntensity: 0.8,
+      grainIntensity: 0.4,
       grayscale: false,
     });
   }
@@ -307,7 +350,7 @@ export class Game {
     this.uiSystem.update(this.player.position, this.camera);
     this.debugger.update(this.player.position, this.camera);
 
-    this.input.endFrame?.(); // si existe en tu Input
+    this.input.endFrame();
   }
   private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();

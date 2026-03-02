@@ -94,3 +94,31 @@ function addColliderHelpers(scene: THREE.Scene, colliders: NamedBoxCollider[]) {
     scene.add(helper);
   }
 }
+export function loadLevel1FromRoot(
+  scene: THREE.Scene,
+  root: THREE.Object3D,
+  opts?: { debug?: boolean },
+) {
+  // Render tweaks (sombras baratas)
+  root.traverse((child) => {
+    if (!(child as any).isMesh) return;
+    const mesh = child as THREE.Mesh;
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+  });
+
+  scene.add(root);
+
+  const colliders = LEVEL1_COLLIDERS.map(centerSizeToBox);
+  const namedColliders = LEVEL1_COLLIDERS.map((c) => ({
+    name: c.name,
+    box: centerSizeToBox(c),
+  }));
+  if (opts?.debug) addColliderHelpers(scene, namedColliders);
+
+  return {
+    root,
+    colliders,
+    spawn: new THREE.Vector3(...LEVEL1_SPAWN),
+  };
+}
