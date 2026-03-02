@@ -6,7 +6,7 @@ import { Time } from "@core/Time";
 import { Input } from "@core/Input";
 import { Player } from "@entities/Player";
 import { Enemy } from "@entities/Enemy";
-import { loadLevel1FromRoot } from "@world/Level1";
+import { loadLevel1, loadLevel1FromRoot } from "@world/Level1";
 import { loadEXREnvironment } from "@world/sky";
 import { CollisionSystem } from "@systems/CollisionSystem";
 import { ControlsSystem } from "@systems/ControlsSystem";
@@ -129,7 +129,7 @@ export class Game {
   private async initWorld() {
     const loadingEl = document.getElementById("loading");
     const fill = document.getElementById("loading-bar-fill") as HTMLDivElement;
-    const text = document.getElementById("loading-title") as HTMLDivElement;
+    const text = document.getElementById("loading-text") as HTMLDivElement;
 
     const setProgress = (p: number) => {
       fill.style.width = `${Math.round(p * 100)}%`;
@@ -161,7 +161,15 @@ export class Game {
 
     // 2) HDRI (sin barra exacta, pero con “fase”)
     setStage("Cargando iluminación…");
-    await this.initEnvironment();
+    this.hdriRT = await loadEXREnvironment(
+      this.renderer,
+      this.scene,
+      GAME.HDRI.URL,
+      {
+        setBackground: false,
+        intensity: GAME.HDRI.INTENSITY,
+      },
+    );
 
     // 3) Entidades + colisiones + UI
     this.initEntities();
@@ -188,7 +196,7 @@ export class Game {
 
   private initPostFX() {
     this.postFX = new PostFXSystem(this.renderer, this.scene, this.camera, {
-      grainIntensity: 0.4,
+      grainIntensity: 0.8,
       grayscale: false,
     });
   }
@@ -266,6 +274,13 @@ export class Game {
     this.interact = new InteractSystem(this.camera, this.pickups);
   }
 
+  private async initLevel() {
+    return await loadLevel1(this.scene, {
+      url: GAME.LEVEL1.URL,
+      debug: GAME.LEVEL1.DEBUG,
+    });
+  }
+
   private initCollisions(colliders: THREE.Box3[]) {
     this.collision.setColliders(colliders);
     this.debugger.setColliders(this.scene, colliders);
@@ -335,7 +350,7 @@ export class Game {
     this.uiSystem.update(this.player.position, this.camera);
     this.debugger.update(this.player.position, this.camera);
 
-    this.input.endFrame();
+    this.input.endFrame(); // si existe en tu Input
   }
   private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();
