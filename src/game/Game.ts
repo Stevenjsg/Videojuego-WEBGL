@@ -128,18 +128,36 @@ export class Game {
 
   private async initWorld() {
     const loadingEl = document.getElementById("loading");
-    const fill = document.getElementById("loading-bar-fill") as HTMLDivElement;
-    const text = document.getElementById("loading-text") as HTMLDivElement;
+    const fill = document.getElementById(
+      "loading-bar-fill",
+    ) as HTMLDivElement | null;
+    const text = document.getElementById(
+      "loading-text",
+    ) as HTMLDivElement | null;
+    const title = document.querySelector(
+      ".loading-title",
+    ) as HTMLDivElement | null;
 
-    const setProgress = (p: number) => {
-      fill.style.width = `${Math.round(p * 100)}%`;
-      text.textContent = `${Math.round(p * 100)}%`;
+    const showLoading = () => loadingEl?.classList.remove("hidden");
+    const hideLoading = () => loadingEl?.classList.add("hidden");
+
+    const setTitle = (s: string) => {
+      if (title) title.textContent = s;
     };
-    const setStage = (s: string) => (text.textContent = s);
+    const setStage = (s: string) => {
+      if (text) text.textContent = s;
+    };
+    const setProgress = (p01: number) => {
+      if (!fill || !text) return;
+      const p = Math.round(p01 * 100);
+      fill.style.width = `${p}%`;
+      text.textContent = `${p}%`;
+    };
 
     loadingEl?.classList.remove("hidden");
-    setProgress(0);
     setStage("Preparando…");
+    setTitle("Preparando…");
+    setProgress(0);
 
     // Controles y postFX pueden crearse ya (no descargan)
     this.initControls();
@@ -147,11 +165,14 @@ export class Game {
 
     // 1) DESCARGA + PARSEO NIVEL
     setStage("Descargando nivel…");
+    setTitle("Descargando nivel…");
+
     const levelBlob = await downloadWithProgress(GAME.LEVEL1.URL, (p) => {
       if (p.ratio != null) setProgress(p.ratio * 0.6); // 60% del total
     });
 
     setStage("Procesando nivel…");
+    setTitle("Procesando nivel…");
     const levelRoot = await loadGLBFromBlob(levelBlob, setStage);
 
     // En vez de loadLevel1() (que recarga), usa fromRoot:
@@ -161,6 +182,7 @@ export class Game {
 
     // 2) HDRI (sin barra exacta, pero con “fase”)
     setStage("Cargando iluminación…");
+    setTitle("Cargando iluminación…");
     this.hdriRT = await loadEXREnvironment(
       this.renderer,
       this.scene,
@@ -178,6 +200,7 @@ export class Game {
     this.initUI();
 
     setProgress(1);
+    setTitle("Listo");
     setStage("Listo");
     setTimeout(() => loadingEl?.classList.add("hidden"), 200);
   }
