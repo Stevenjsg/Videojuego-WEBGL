@@ -34,7 +34,7 @@ export class CollisionSystem {
 
   constructor(cfg?: CollisionConfig) {
     this.playerRadius = cfg?.playerRadius ?? 0.35;
-    this.playerHeight = cfg?.playerHeight ?? 1.7;
+    this.playerHeight = cfg?.playerHeight ?? 1.8;
     this.useSlide = cfg?.useSlide ?? true;
 
     this.ignoreFloors = cfg?.ignoreFloors ?? true;
@@ -56,55 +56,85 @@ export class CollisionSystem {
   buildFromObjects(objects: THREE.Object3D[]) {
     this.colliders = [];
     for (const obj of objects) {
-      const c = this.objectToCollider(obj);
-      if (c) this.colliders.push(c);
+      // SOLO usamos los objetos que dibujamos en Blender para la física
+      if (obj.name.toLowerCase().startsWith("col_")) {
+        const c = this.objectToCollider(obj);
+        if (c) {
+          this.colliders.push(c);
+          obj.visible = false; // ¡Los hacemos invisibles aquí mismo!
+          console.log(
+            `[COLLISION] Collider "${c.name}" cargado con box:`,
+            c.box,
+          );
+        }
+      }
     }
+    console.log(
+      `[COLLISION] Cargados ${this.colliders.length} colliders desde Blender.`,
+    );
+  }
+
+  private getFloorHeight(playerPos: THREE.Vector3): number {
+    let highestY = 0; // Altura base del nivel (0)
+    const feetY = playerPos.y - this.playerHeight;
+    const stepOffset = 0.5; // La altura máxima de un escalón que puedes subir de golpe
+
+    const r = this.playerRadius * 0.5; // Radio reducido para no "enganchar" bordes lejanos
+
+    for (const c of this.colliders) {
+      const box = c.box;
+      // Si el jugador está sobre esta caja (X y Z)
+      if (
+        playerPos.x + r >= box.min.x &&
+        playerPos.x - r <= box.max.x &&
+        playerPos.z + r >= box.min.z &&
+        playerPos.z - r <= box.max.z
+      ) {
+        // Y la caja está por debajo de nuestros pies + el stepOffset
+        if (box.max.y > highestY && box.max.y <= feetY + stepOffset) {
+          highestY = box.max.y;
+        }
+      }
+    }
+    return highestY;
   }
 
   resolvePlayer(playerPos: THREE.Vector3, prevPos: THREE.Vector3) {
-    // MVP: sin físicas, fijamos altura
-    const before = this.tmpTryX.copy(playerPos); // reutiliza un vec temp si quieres
-    playerPos.y = this.playerHeight;
+    const before = this.tmpTryX.copy(playerPos);
+
+    // 1. Detectar la altura del suelo/escalera actual
+    const currentFloorY = this.getFloorHeight(prevPos);
+
+    // 2. Fijar la altura del jugador basada en el suelo (¡Adiós al Y estático!)
+    playerPos.y = currentFloorY + this.playerHeight;
+    const feetY = currentFloorY; // Dónde están los pies
 
     if (!this.useSlide) {
-      if (this.intersectsAny(playerPos)) playerPos.copy(prevPos);
+      if (this.intersectsAny(playerPos, feetY)) playerPos.copy(prevPos);
       return;
     }
 
     this.tmpMove.copy(playerPos).sub(prevPos);
+    this.tmpMove.y = 0; // Ignoramos el movimiento en Y para el deslizamiento
 
-    // clamp para evitar penetración grande en un frame
-    const maxStep = 0.25; // ajusta 0.2-0.35
+    // Limitar velocidad máxima de la física (Mantiene el CCD estable)
+    const maxStep = 0.35;
     const len = this.tmpMove.length();
     if (len > maxStep) {
       this.tmpMove.multiplyScalar(maxStep / len);
-      playerPos.copy(prevPos).add(this.tmpMove);
+      playerPos.x = prevPos.x + this.tmpMove.x;
+      playerPos.z = prevPos.z + this.tmpMove.z;
     }
 
-    // si el movimiento completo no colisiona, ok
-    if (!this.intersectsAny(playerPos)) return;
-
-    // slide X
+    // Slide X
     this.tmpTryX.set(prevPos.x + this.tmpMove.x, playerPos.y, prevPos.z);
-    if (this.intersectsAny(this.tmpTryX)) this.tmpTryX.x = prevPos.x;
+    if (this.intersectsAny(this.tmpTryX, feetY)) this.tmpTryX.x = prevPos.x;
 
-    // slide Z
+    // Slide Z
     this.tmpTryZ.set(this.tmpTryX.x, playerPos.y, prevPos.z + this.tmpMove.z);
-    if (this.intersectsAny(this.tmpTryZ)) this.tmpTryZ.z = prevPos.z;
+    if (this.intersectsAny(this.tmpTryZ, feetY)) this.tmpTryZ.z = prevPos.z;
 
     playerPos.copy(this.tmpTryZ);
-
-    const jump = playerPos.distanceTo(before);
-    if (jump > 0.5) {
-      console.log("[COLLISION] big correction:", jump.toFixed(3), {
-        prev: prevPos.toArray(),
-        before: before.toArray(),
-        after: playerPos.toArray(),
-      });
-    }
-
-    // fallback duro
-    if (this.intersectsAny(playerPos)) playerPos.copy(prevPos);
   }
 
   // ---------------- private ----------------
@@ -133,23 +163,22 @@ export class CollisionSystem {
     return { name, box };
   }
 
-  private intersectsAny(playerPos: THREE.Vector3) {
-    // centro de esfera a media altura del jugador
+  private intersectsAny(playerPos: THREE.Vector3, feetY: number) {
+    // Esfera central a media altura
     this.tmpCenter.set(
       playerPos.x,
       playerPos.y - this.playerHeight * 0.5,
       playerPos.z,
     );
-
     const r2 = this.playerRadius * this.playerRadius;
+    const stepOffset = 0.5;
 
     for (const c of this.colliders) {
-      if (this.ignoreFloors && this.isFloorLike(c)) continue;
-      if (this.isBadCollider(c)) continue;
-
       const box = c.box;
 
-      // closest point en AABB
+      // ¡MAGIA! Ignorar cajas que actúan como suelo o escalón bajito
+      if (box.max.y <= feetY + stepOffset) continue;
+
       this.tmpClosest.set(
         THREE.MathUtils.clamp(this.tmpCenter.x, box.min.x, box.max.x),
         THREE.MathUtils.clamp(this.tmpCenter.y, box.min.y, box.max.y),
@@ -162,7 +191,6 @@ export class CollisionSystem {
 
       if (dx * dx + dy * dy + dz * dz < r2) return true;
     }
-
     return false;
   }
 
