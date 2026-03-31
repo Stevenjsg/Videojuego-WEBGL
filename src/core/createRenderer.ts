@@ -9,6 +9,7 @@ export function createRenderer(mount: HTMLElement) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.setSize(mount.clientWidth, mount.clientHeight, false);
   renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   mount.appendChild(renderer.domElement);
   return renderer;
 }
