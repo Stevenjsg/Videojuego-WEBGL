@@ -68,6 +68,9 @@ export class Game {
   private pickups: Pickup[] = [];
   private interact!: InteractSystem;
 
+  /** Meshes del nivel usados para el raycast de línea de visión del enemy */
+  private levelMeshes: THREE.Object3D[] = [];
+
   constructor(
     private mount: HTMLElement,
     private ui: GameUI,
@@ -82,6 +85,7 @@ export class Game {
         this.ui.debug ??
         (document.getElementById("debug") as HTMLDivElement | null),
       enabled: false,
+      scene: this.scene,
     });
 
     this.bindUI();
@@ -176,8 +180,18 @@ export class Game {
     const levelRoot = await loadGLBFromBlob(levelBlob, setStage);
 
     // En vez de loadLevel1() (que recarga), usa fromRoot:
-    const { colliders, spawn } = loadLevel1FromRoot(this.scene, levelRoot, {
+    const { colliders, spawn } = await loadLevel1(this.scene, {
       debug: GAME.LEVEL1.DEBUG,
+      url: GAME.LEVEL1.URL,
+    });
+    const { colliders: zone1Colliders } = await loadLevel1(this.scene, {
+      url: GAME.LEVEL1_ZONE1.URL,
+      pos: GAME.LEVEL1_ZONE1.POS,
+      debug: GAME.LEVEL1_ZONE1.DEBUG,
+    });
+    // Recoger todos los meshes del nivel para el raycast de LOS del enemy
+    levelRoot.traverse((child) => {
+      if ((child as any).isMesh) this.levelMeshes.push(child);
     });
 
     // 2) HDRI (sin barra exacta, pero con “fase”)
@@ -186,7 +200,7 @@ export class Game {
     await this.initEnvironment();
     // 3) Entidades + colisiones + UI
     this.initEntities();
-    this.initCollisions(colliders);
+    this.initCollisions(colliders.concat(zone1Colliders));
     this.initSpawn(spawn);
     this.initUI();
 
@@ -210,7 +224,7 @@ export class Game {
 
   private initPostFX() {
     this.postFX = new PostFXSystem(this.renderer, this.scene, this.camera, {
-      grainIntensity: 0.8,
+      grainIntensity: 0.4,
       grayscale: false,
     });
   }
@@ -244,7 +258,6 @@ export class Game {
     this.enemySystem = new EnemySystem(this.enemy, this.collision, {
       speed: GAME.ENEMY.SPEED,
       catchDistance: GAME.ENEMY.CATCH_DISTANCE,
-      watchDotThreshold: GAME.ENEMY.WATCH_DOT,
     });
     const windowPoint = new THREE.Vector3(5, 0, -2); // ajusta
     const dir = windowPoint.clone().sub(this.enemy.position);
@@ -352,17 +365,28 @@ export class Game {
 
     this.flashlight.update(dt);
 
-    // enemy: pásale flashlightOn para tu regla
-    const caught = this.enemySystem.update(
+    // Enemy: congela sólo si linterna encendida + frustum + LOS libre
+    const caught = this.enemySystem.updateAdvanced({
       dt,
-      this.camera,
-      this.player.position,
-    );
+      camera: this.camera,
+      playerPos: this.player.position,
+      flashlightOn: this.flashlight.isOn,
+      objectivesCollected: this.inventory.objectives,
+      objectivesTotal: this.inventory.objectivesTotal,
+      occluderMeshes: this.levelMeshes,
+    });
 
     if (caught) this.setGameOver();
 
-    this.uiSystem.update(this.player.position, this.camera);
-    this.debugger.update(this.player.position, this.camera);
+    this.debugger.update(this.player.position, this.camera, {
+      flashlightOn: this.flashlight.isOn,
+      flashlightBattery: this.flashlight.battery,
+      enemyPos: this.enemy.position,
+      enemyState: this.enemySystem.behaviorState,
+      enemyFrozen: this.enemySystem.lastFrozen,
+      enemyInFrustum: this.enemySystem.lastInFrustum,
+      enemyHasLOS: this.enemySystem.lastHasLOS,
+    });
 
     this.input.endFrame(); // si existe en tu Input
   }
