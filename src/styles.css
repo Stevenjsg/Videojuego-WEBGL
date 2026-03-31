@@ -167,16 +167,52 @@ body {
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     monospace;
   font-size: 12px;
-  line-height: 1.25;
-  color: rgba(234, 234, 234, 0.9);
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  line-height: 1.5;
+  color: rgba(220, 220, 220, 0.92);
+  background: rgba(0, 0, 0, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 10px 14px;
   white-space: pre;
+  min-width: 300px;
+  backdrop-filter: blur(4px);
 }
 .debug.hidden {
   display: none;
+}
+
+/* Debug panel — tokens de color */
+.debug .dbg-header {
+  color: rgba(255, 255, 255, 0.45);
+  display: block;
+  margin-bottom: 2px;
+}
+.debug .dbg-section {
+  color: rgba(180, 160, 255, 0.85);
+  letter-spacing: 0.06em;
+  font-size: 10px;
+}
+.debug .dbg-key {
+  color: rgba(255, 220, 80, 0.9);
+  background: rgba(255, 220, 80, 0.1);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.debug .dbg-on {
+  color: #4ade80;
+}
+.debug .dbg-off {
+  color: #f87171;
+}
+.debug .dbg-dim {
+  color: rgba(200, 200, 200, 0.45);
+}
+.debug .dbg-warn {
+  color: #fb923c;
+}
+.debug .dbg-danger {
+  color: #ef4444;
+  font-weight: bold;
 }
 .loading {
   position: fixed;
