@@ -19,7 +19,7 @@ export function extractColliders(root: THREE.Object3D) {
 
     if (!(marked || hinted) || denied) return;
 
-    // Filtro por tamaño: fuera cajas enormes tipo “shell”
+    // Filtro por tamaño: fuera cajas enormes tipo "shell"
     mesh.geometry.computeBoundingBox();
     const bb = mesh.geometry.boundingBox;
     if (!bb) return;

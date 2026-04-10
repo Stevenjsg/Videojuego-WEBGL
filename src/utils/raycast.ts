@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
 const _raycaster = new THREE.Raycaster();
+const _dir = new THREE.Vector3();
 
 export function hasLineOfSight(
   from: THREE.Vector3,
@@ -8,7 +9,7 @@ export function hasLineOfSight(
   objects: THREE.Object3D[],
   opts?: { near?: number; far?: number },
 ) {
-  const dir = new THREE.Vector3().subVectors(to, from);
+  const dir = _dir.subVectors(to, from);
   const dist = dir.length();
   if (dist <= 0.0001) return true;
 

@@ -6,7 +6,9 @@ import { Time } from "@core/Time";
 import { Input } from "@core/Input";
 import { Player } from "@entities/Player";
 import { Enemy } from "@entities/Enemy";
-import { loadLevel1, loadLevel1FromRoot } from "@world/Level1";
+import { setupLevelMeshes } from "@world/Level1";
+import { loadZone1 } from "@world/Zone1";
+import type { LevelSpawns } from "@world/Zone1";
 import { loadEXREnvironment } from "@world/sky";
 import { CollisionSystem } from "@systems/CollisionSystem";
 import { ControlsSystem } from "@systems/ControlsSystem";
@@ -18,11 +20,20 @@ import { Flashlight } from "@entities/Flashlight";
 import { Pickup } from "@entities/Pickup";
 import { InteractSystem } from "@systems/InteractSystem";
 import { InventorySystem } from "@systems/InventorySystem";
-import { PICKUPS } from "@world/levelData";
+import { PICKUPS, LEVEL1_SPAWN } from "@world/levelData";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
+import type { PickupType } from "@entities/Pickup";
 import type { GameUI, GameState } from "./types";
+
+/** Maps Zone1 item type names to PickupType + model URL. */
+const ZONE1_ITEM_MAP: Record<string, { pickup: PickupType; url: string }> = {
+  Pila:       { pickup: "battery",   url: "/models/assets/battery.glb" },
+  "Llave 1":  { pickup: "key",       url: "/models/assets/battery.glb" }, // TODO: key model
+  "Llave 2":  { pickup: "key",       url: "/models/assets/battery.glb" }, // TODO: key model
+  Fusible:    { pickup: "objective",  url: "/models/assets/battery.glb" }, // TODO: fusible model
+};
 import { GAME } from "./constants";
 import { hideOverlay, setGameOverUI } from "./state";
 import { bindLoadingUI } from "@/core/assets";
@@ -57,11 +68,6 @@ export class Game {
   private prevPos = new THREE.Vector3();
   private raf = 0;
   private state: GameState = "LOADING";
-
-  // debug jumps
-  private debugInitialized = false;
-  private lastPos = new THREE.Vector3();
-  private lastYaw = 0;
 
   private flashlight!: Flashlight;
   private inventory!: InventorySystem;
@@ -142,9 +148,6 @@ export class Game {
       ".loading-title",
     ) as HTMLDivElement | null;
 
-    const showLoading = () => loadingEl?.classList.remove("hidden");
-    const hideLoading = () => loadingEl?.classList.add("hidden");
-
     const setTitle = (s: string) => {
       if (title) title.textContent = s;
     };
@@ -163,45 +166,54 @@ export class Game {
     setTitle("Preparando…");
     setProgress(0);
 
-    // Controles y postFX pueden crearse ya (no descargan)
     this.initControls();
     this.initPostFX();
 
-    // 1) DESCARGA + PARSEO NIVEL
+    // ── 1) Apartment level (download once, no re-download) ──
     setStage("Descargando nivel…");
     setTitle("Descargando nivel…");
 
     const levelBlob = await downloadWithProgress(GAME.LEVEL1.URL, (p) => {
-      if (p.ratio != null) setProgress(p.ratio * 0.6); // 60% del total
+      if (p.ratio != null) setProgress(p.ratio * 0.6);
     });
 
     setStage("Procesando nivel…");
     setTitle("Procesando nivel…");
     const levelRoot = await loadGLBFromBlob(levelBlob, setStage);
 
-    // En vez de loadLevel1() (que recarga), usa fromRoot:
-    const { colliders, spawn } = await loadLevel1(this.scene, {
-      debug: GAME.LEVEL1.DEBUG,
-      url: GAME.LEVEL1.URL,
-    });
-    const { colliders: zone1Colliders } = await loadLevel1(this.scene, {
-      url: GAME.LEVEL1_ZONE1.URL,
-      pos: GAME.LEVEL1_ZONE1.POS,
-      debug: GAME.LEVEL1_ZONE1.DEBUG,
-    });
-    // Recoger todos los meshes del nivel para el raycast de LOS del enemy
+    const lp = GAME.LEVEL1.POS;
+    levelRoot.position.set(lp.x, lp.y, lp.z);
+    this.scene.add(levelRoot);
+    levelRoot.updateMatrixWorld(true);
+    const apartmentColliders = setupLevelMeshes(levelRoot);
+
     levelRoot.traverse((child) => {
       if ((child as any).isMesh) this.levelMeshes.push(child);
     });
 
-    // 2) HDRI (sin barra exacta, pero con “fase”)
+    // ── 2) Zone 1 ──
+    setStage("Cargando zona 1…");
+    setTitle("Cargando zona 1…");
+    const zone1 = await loadZone1(this.scene, GAME.LEVEL1_ZONE1.URL);
+    const zp = GAME.LEVEL1_ZONE1.POS;
+    zone1.map.position.set(zp.x, zp.y, zp.z);
+    zone1.map.updateMatrixWorld(true);
+    const zone1Colliders = setupLevelMeshes(zone1.map);
+
+    // ── 3) HDRI ──
     setStage("Cargando iluminación…");
     setTitle("Cargando iluminación…");
     await this.initEnvironment();
-    // 3) Entidades + colisiones + UI
-    this.initEntities();
-    this.initCollisions(colliders.concat(zone1Colliders));
-    this.initSpawn(spawn);
+
+    // ── 4) Entities, collisions, UI ──
+    this.initEntities(zone1.spawns);
+    this.initCollisions(apartmentColliders.concat(zone1Colliders));
+
+    // Player spawn: zone1 empty or hardcoded fallback
+    const playerSpawn = zone1.spawns.player
+      ? new THREE.Vector3().setFromMatrixPosition(zone1.spawns.player.matrixWorld)
+      : new THREE.Vector3(...LEVEL1_SPAWN);
+    this.initSpawn(playerSpawn);
     this.initUI();
 
     setProgress(1);
@@ -241,7 +253,7 @@ export class Game {
     );
   }
 
-  private initEntities() {
+  private initEntities(spawns?: LevelSpawns) {
     this.player = new Player(this.camera, this.controls.object.position);
 
     this.enemy = new Enemy(this.scene, {
@@ -249,23 +261,27 @@ export class Game {
       scale: GAME.ENEMY.SCALE,
     });
 
-    this.enemy.position.set(
-      GAME.ENEMY.SPAWN.x,
-      GAME.ENEMY.SPAWN.y,
-      GAME.ENEMY.SPAWN.z,
-    );
+    // Enemy spawn: zone1 empty or hardcoded fallback
+    if (spawns?.enemy) {
+      this.enemy.position.setFromMatrixPosition(spawns.enemy.matrixWorld);
+    } else {
+      this.enemy.position.set(
+        GAME.ENEMY.SPAWN.x,
+        GAME.ENEMY.SPAWN.y,
+        GAME.ENEMY.SPAWN.z,
+      );
+    }
 
     this.enemySystem = new EnemySystem(this.enemy, this.collision, {
       speed: GAME.ENEMY.SPEED,
       catchDistance: GAME.ENEMY.CATCH_DISTANCE,
     });
-    const windowPoint = new THREE.Vector3(5, 0, -2); // ajusta
-    const dir = windowPoint.clone().sub(this.enemy.position);
+    const dir = new THREE.Vector3(5, 0, -2).sub(this.enemy.position);
     dir.y = 0;
     dir.normalize();
     this.enemy.root.rotation.y = Math.atan2(dir.x, dir.z);
 
-    // Linterna (equipo en cámara)
+    // Linterna
     this.flashlight = new Flashlight(this.camera, {
       url: "/models/assets/flashlight.glb",
       angle: 0.35,
@@ -280,7 +296,7 @@ export class Game {
     });
     this.inventory = new InventorySystem(this.flashlight);
 
-    // Pickups en el mundo
+    // Pickups: apartment hardcoded
     this.pickups = PICKUPS.map(
       (p) =>
         new Pickup({
@@ -295,17 +311,30 @@ export class Game {
         }),
     );
 
+    // Pickups: zone1 spawns (Spawn_Item_ empties from GLB)
+    if (spawns) {
+      for (const item of spawns.items) {
+        const wp = new THREE.Vector3().setFromMatrixPosition(item.node.matrixWorld);
+        const type = ZONE1_ITEM_MAP[item.type];
+        if (!type) continue;
+
+        this.pickups.push(
+          new Pickup({
+            type: type.pickup,
+            url: type.url,
+            position: wp,
+            scale: 0.01,
+            batteryAmount: type.pickup === "battery" ? 0.25 : undefined,
+            keyName: type.pickup === "key" ? item.type : undefined,
+          }),
+        );
+      }
+    }
+
     for (const p of this.pickups) this.scene.add(p.root);
 
     // Interacciones
     this.interact = new InteractSystem(this.camera, this.pickups);
-  }
-
-  private async initLevel() {
-    return await loadLevel1(this.scene, {
-      url: GAME.LEVEL1.URL,
-      debug: GAME.LEVEL1.DEBUG,
-    });
   }
 
   private initCollisions(colliders: THREE.Box3[]) {
@@ -316,11 +345,6 @@ export class Game {
   private initSpawn(spawn: THREE.Vector3) {
     this.player.position.copy(spawn);
     this.controls.object.rotation.y = Math.PI / 2;
-
-    // init jump debugger
-    this.lastPos.copy(this.player.position);
-    this.lastYaw = this.controls.object.rotation.y;
-    this.debugInitialized = true;
   }
 
   private initUI() {
@@ -356,9 +380,12 @@ export class Game {
     if (this.input.justPressed("KeyE")) {
       const picked = this.interact.tryPickup(2.0);
       if (picked) {
-        if (picked.type === "flashlight") this.inventory.pickupFlashlight();
-        else this.inventory.pickupBattery(picked.batteryAmount);
-
+        switch (picked.type) {
+          case "flashlight": this.inventory.pickupFlashlight(); break;
+          case "battery":    this.inventory.pickupBattery(picked.batteryAmount); break;
+          case "key":        this.inventory.pickupKey(picked.cfg.keyName ?? ""); break;
+          case "objective":  this.inventory.pickupObjective(); break;
+        }
         this.interact.removePickup(picked, this.scene);
       }
     }
@@ -409,44 +436,6 @@ export class Game {
     this.state = "GAME_OVER";
     this.controls.unlock();
     setGameOverUI(this.ui);
-  }
-
-  // -------------------- debug --------------------
-
-  private debugJumps() {
-    const pos = this.player.position;
-    const d = pos.distanceTo(this.lastPos);
-
-    const yaw = this.controls.object.rotation.y;
-    const dyaw = Math.abs(
-      THREE.MathUtils.euclideanModulo(
-        yaw - this.lastYaw + Math.PI,
-        Math.PI * 2,
-      ) - Math.PI,
-    );
-
-    if (d > 0.6) {
-      console.warn(
-        "[JUMP POS]",
-        d.toFixed(3),
-        "pos",
-        pos.toArray(),
-        "prev",
-        this.lastPos.toArray(),
-      );
-    }
-    if (dyaw > 1.5) {
-      console.warn(
-        "[JUMP YAW]",
-        ((dyaw * 180) / Math.PI).toFixed(1),
-        "deg",
-        "yaw",
-        yaw.toFixed(3),
-      );
-    }
-
-    this.lastPos.copy(pos);
-    this.lastYaw = yaw;
   }
 
   // -------------------- resize --------------------

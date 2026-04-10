@@ -5,7 +5,7 @@ export const GAME = {
     HEIGHT: 1.8,
     RADIUS: 0.3,
     BASE_SPEED: 1.5,
-    SUBSTEPS: 3,
+    SUBSTEPS: 2,
   },
 
   ENEMY: {
@@ -19,10 +19,11 @@ export const GAME = {
   LEVEL1: {
     URL: "/models/apartment/ModernApartment.glb",
     DEBUG: false,
+    POS: { x: -3.22, y: 0, z: 30.5 },
   },
   LEVEL1_ZONE1: {
     URL: "/models/Zona1/Zona1.glb",
-    POS: { x: 8, y: 0, z: 8 },
+    POS: { x: 0, y: 0, z: 0 },
     DEBUG: false,
   },
   UI: {

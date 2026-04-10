@@ -215,7 +215,7 @@ export class CollisionSystem {
 
     if (volume > this.maxVolume) return true;
 
-    // placas gigantes tipo “shell”
+    // placas gigantes tipo "shell"
     if (
       s.y < this.giantFlatY &&
       (s.x > this.giantFlatXZ || s.z > this.giantFlatXZ)

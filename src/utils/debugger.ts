@@ -37,6 +37,9 @@ export class Debugger {
   private frameMs = 0;
   private prevFrameT = performance.now();
 
+  // Reusable temp vector (avoids allocation per frame)
+  private tmpFwd = new THREE.Vector3();
+
   // Colliders
   private storedColliders: THREE.Box3[] = [];
   private helpers: THREE.Box3Helper[] = [];
@@ -76,8 +79,8 @@ export class Debugger {
     this.countFrame();
     if (!this.enabled || !this.debugEl) return;
 
-    const fwd = new THREE.Vector3();
-    camera.getWorldDirection(fwd);
+    camera.getWorldDirection(this.tmpFwd);
+    const fwd = this.tmpFwd;
 
     const ep = extras?.enemyPos;
     const dist = ep ? playerPos.distanceTo(ep) : null;

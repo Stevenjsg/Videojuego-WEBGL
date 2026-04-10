@@ -44,10 +44,12 @@ export class EnemySystem {
   private projMatrix = new THREE.Matrix4();
   private enemySphere = new THREE.Sphere();
 
-  // LOS raycast
+  // LOS raycast (throttled: runs every 3rd frame)
   private raycaster = new THREE.Raycaster();
   private _camPos = new THREE.Vector3();
   private _toEnemy = new THREE.Vector3();
+  private losFrame = 0;
+  private cachedLOS = false;
 
   // Movement
   private tmpDir = new THREE.Vector3();
@@ -100,9 +102,16 @@ export class EnemySystem {
     //   2. El enemy está dentro del frustum de la cámara
     //   3. No hay ningún obstáculo entre la cámara y el enemy (LOS)
     const inFrustum = this.isInFrustum(camera);
-    const los = inFrustum
-      ? this.hasLineOfSight(camera, input.occluderMeshes ?? [])
-      : false;
+    let los: boolean;
+    if (inFrustum) {
+      // Raycast is expensive — only run every 3rd frame, cache result
+      if (this.losFrame++ % 3 === 0) {
+        this.cachedLOS = this.hasLineOfSight(camera, input.occluderMeshes ?? []);
+      }
+      los = this.cachedLOS;
+    } else {
+      los = false;
+    }
     const freeze = input.flashlightOn && inFrustum && los;
 
     this.lastInFrustum = inFrustum;
