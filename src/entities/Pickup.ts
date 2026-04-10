@@ -2,7 +2,7 @@ import { loadingManager } from "@/core/assets";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-export type PickupType = "flashlight" | "battery";
+export type PickupType = "flashlight" | "battery" | "key" | "objective";
 
 export type PickupConfig = {
   type: PickupType;
@@ -10,6 +10,7 @@ export type PickupConfig = {
   position: THREE.Vector3;
   scale?: number;
   batteryAmount?: number; // solo para battery
+  keyName?: string; // solo para key (ej: "Llave 1")
 };
 
 export class Pickup {

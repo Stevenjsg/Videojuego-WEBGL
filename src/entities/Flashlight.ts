@@ -37,7 +37,7 @@ export class Flashlight {
   private drainPerSec: number;
   private model: THREE.Object3D | null = null;
 
-  // “muzzle” (punta) y “target” (punto al que apunta)
+  // "muzzle" (punta) y "target" (punto al que apunta)
   private muzzle = new THREE.Object3D();
   private target = new THREE.Object3D();
 
@@ -79,7 +79,7 @@ export class Flashlight {
 
     // Configuración de Sombras
     this.light.castShadow = true;
-    this.light.shadow.mapSize.set(1024, 1024);
+    this.light.shadow.mapSize.set(512, 512);
     this.light.shadow.camera.near = 0.5;
     this.light.shadow.camera.far = cfg.distance ?? 30.0;
 
@@ -135,10 +135,8 @@ export class Flashlight {
   update(dt: number) {
     if (!this.hasFlashlight) return;
 
-    // Asegura matrices
-    this.muzzle.updateMatrixWorld(true);
-    this.target.updateMatrixWorld(true);
-    this.light.target.updateMatrixWorld(true);
+    // Single call updates root + all children (muzzle, target, light.target)
+    this.root.updateMatrixWorld(true);
 
     if (this.isOn) {
       this.battery -= this.drainPerSec * dt;
