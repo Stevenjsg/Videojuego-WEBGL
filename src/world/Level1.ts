@@ -27,9 +27,7 @@ export async function loadLevel1(
   scene: THREE.Scene,
   opts: Level1Options = {},
 ): Promise<Level1Result> {
-  const collisionBoxes: THREE.Box3[] = [];
   const url = opts.url ?? "";
-  const debug = opts.debug ?? false;
   const addToScene = opts.addToScene ?? true;
 
   const root = await loadGLB(url);
@@ -37,17 +35,13 @@ export async function loadLevel1(
   if (opts.pos) root.position.set(opts.pos.x, opts.pos.y, opts.pos.z);
   if (addToScene) scene.add(root);
 
-  // 🚨 LA LÍNEA MÁGICA: Fuerza la actualización de las coordenadas 3D reales
   root.updateMatrixWorld(true);
 
-  const { root: tweakedRoot, colliders: tweakedColliders } = setupLevelMeshes(
-    root,
-    collisionBoxes,
-  );
+  const colliders = setupLevelMeshes(root);
 
   return {
-    root: tweakedRoot,
-    colliders: tweakedColliders,
+    root,
+    colliders,
     namedColliders: [],
     spawn: new THREE.Vector3(...LEVEL1_SPAWN),
   };
@@ -91,27 +85,21 @@ async function loadGLB(url: string): Promise<THREE.Object3D> {
   });
 }
 
-function setupLevelMeshes(root: THREE.Object3D, collisionBoxes: THREE.Box3[]) {
+/** Extract col_ colliders and configure shadow properties on all meshes. */
+export function setupLevelMeshes(root: THREE.Object3D): THREE.Box3[] {
+  const colliders: THREE.Box3[] = [];
   root.traverse((node: any) => {
     if (node.isMesh && node.name.toLowerCase().startsWith("col_")) {
-      // 1. Nos aseguramos de que la malla base tenga su caja calculada
       node.geometry.computeBoundingBox();
-
-      // 2. Extraemos el AABB global (ahora sí, en las coordenadas correctas)
       const box = new THREE.Box3().setFromObject(node);
-      collisionBoxes.push(box);
-
-      // 3. Ocultamos la caja física
+      colliders.push(box);
       node.visible = false;
     } else if (node.isMesh) {
-      node.castShadow = true; // Proyecta sombra si la linterna le da
-      node.receiveShadow = true; // Permite que se dibujen sombras sobre él
+      node.castShadow = false;
+      node.receiveShadow = true;
     }
   });
-  return {
-    root,
-    colliders: collisionBoxes,
-  };
+  return colliders;
 }
 
 function centerSizeToBox(def: {
