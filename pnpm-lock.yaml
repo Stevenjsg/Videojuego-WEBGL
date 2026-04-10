@@ -21,6 +21,9 @@ importers:
       '@types/three':
         specifier: 0.182.0
         version: 0.182.0
+      lil-gui:
+        specifier: ^0.21.0
+        version: 0.21.0
 
 packages:
 
@@ -351,6 +354,9 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  lil-gui@0.21.0:
+    resolution: {integrity: sha512-tpvxN7v1GvE/Tv+GRopfOp0W7fVEjF4PltkuX8vOCIfim22rD1ztvfkoEMcv9lzQeuNUSeIrUmUjBwmlW/oUew==}
+
   meshoptimizer@0.22.0:
     resolution: {integrity: sha512-IebiK79sqIy+E4EgOr+CAw+Ke8hAspXKzBd0JdgEmPHiAwmvEj2S4h1rfvo+o/BnfEYd/jAOg5IeeIjzlzSnDg==}
 
@@ -647,6 +653,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  lil-gui@0.21.0: {}
 
   meshoptimizer@0.22.0: {}
 
