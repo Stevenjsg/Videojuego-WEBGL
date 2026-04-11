@@ -8,6 +8,18 @@ export type DoorConfig = {
   requiresKey: string | null;
 };
 
+// Nombres posibles del empty-pivote según la exportación de Blender
+const PIVOT_NAMES = ["Pivot_Door001", "pivot_door001", "Pivot_Door.001", "pivot_door.001", "Pivot_Door", "pivot_door"];
+const COL_NAMES   = ["Colision_Puerta", "colision_puerta", "col_puerta", "Col_Puerta"];
+
+function findByNames(root: THREE.Object3D, names: string[]): THREE.Object3D | null {
+  for (const name of names) {
+    const found = root.getObjectByName(name);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class InteractiveDoor {
   public root: THREE.Object3D;
   public pivot: THREE.Object3D | null = null;
@@ -18,6 +30,11 @@ export class InteractiveDoor {
   private targetAngle = 0;
   private baseAngle = 0;
 
+  /** Caja de colisión en estado cerrado (world-space AABB) para restaurar al cerrar */
+  private closedBox: THREE.Box3 | null = null;
+  /** Si estamos cerrando y esperando que la animación termine */
+  private pendingCollisionRestore = false;
+
   public requiresKey: string | null;
 
   constructor(cfg: DoorConfig) {
@@ -27,66 +44,76 @@ export class InteractiveDoor {
     this.root.position.copy(cfg.position);
     this.root.quaternion.copy(cfg.quaternion);
     this.root.scale.copy(cfg.scale);
-
-    // Update matrix so we can compute world transforms right now
     this.root.updateMatrixWorld(true);
 
-    // Buscamos el cubo de colisión y el pivote
-    const colMesh = this.root.getObjectByName("Colision_Puerta") as THREE.Mesh;
-    this.pivot = this.root.getObjectByName("Pivot_Door.001") || null;
-    
-    if (colMesh) {
-      colMesh.visible = false;
-      colMesh.geometry.computeBoundingBox();
-      this.collider = new THREE.Box3().setFromObject(colMesh);
-    }
-    
-    // Almacenamos su ángulo inicial para que al abrir gire desde su verdadera rotación
-    this.root.traverse((obj) => {
-      obj.matrixAutoUpdate = true;
-    });
+    this.root.traverse((obj) => { obj.matrixAutoUpdate = true; });
 
-    if (this.pivot) {
+    // ── Debug: volcar el árbol de nombres del modelo ──
+    {
+      const names: string[] = [];
+      this.root.traverse((o) => { if (o.name) names.push(o.name); });
+      console.log("[InteractiveDoor] Nombres en el modelo:", names);
+    }
+
+    // Buscar el pivote por múltiples nombres posibles
+    this.pivot = findByNames(this.root, PIVOT_NAMES);
+
+    if (!this.pivot) {
+      console.warn("[InteractiveDoor] No se encontró el pivote. Nombres buscados:", PIVOT_NAMES);
+    } else {
       this.baseAngle = this.pivot.rotation.y;
       this.currentAngle = this.baseAngle;
       this.targetAngle = this.baseAngle;
     }
+
+    // Buscar la malla de colisión y guardar su AABB en estado cerrado
+    const colMesh = findByNames(this.root, COL_NAMES) as THREE.Mesh | null;
+    if (colMesh) {
+      colMesh.visible = false;
+      colMesh.geometry.computeBoundingBox();
+      const box = new THREE.Box3().setFromObject(colMesh);
+      this.collider  = box;
+      this.closedBox = box.clone(); // guardamos la caja cerrada para restaurar
+    }
   }
 
   toggle() {
-    console.log("¡Puerta accionada!");
     this.isOpen = !this.isOpen;
-    this.targetAngle = this.isOpen ? this.baseAngle + Math.PI / 2 : this.baseAngle; // 90 grados respecto a la base
 
-    // Desactivar la colisión de la puerta si la hemos abierto
-    if (this.collider) {
-      if (this.isOpen) {
-        this.collider.makeEmpty();
-      } else {
-        // Restaurar caja de colisión (calculada con ángulo 0)
-        this.pivot?.rotation.set(0, this.baseAngle, 0);
-        this.pivot?.updateMatrix();
-        this.root.updateMatrixWorld(true);
-        const colMesh = this.root.getObjectByName(
-          "Colision_Puerta",
-        ) as THREE.Mesh;
-        if (colMesh) {
-          this.collider.setFromObject(colMesh);
-        }
-      }
+    // 90° en sentido antihorario respecto a la rotación base
+    this.targetAngle = this.isOpen
+      ? this.baseAngle + Math.PI / 2
+      : this.baseAngle;
+
+    if (this.isOpen) {
+      // Abrir: desactivar colisión inmediatamente
+      this.collider?.makeEmpty();
+      this.pendingCollisionRestore = false;
+    } else {
+      // Cerrar: la colisión se restaura en update() cuando la animación termina
+      this.pendingCollisionRestore = true;
     }
   }
 
   update(dt: number) {
     if (!this.pivot) return;
 
-    // Smooth rotation
+    // Interpolación suave de ángulo
     this.currentAngle = THREE.MathUtils.lerp(
       this.currentAngle,
       this.targetAngle,
-      dt * 5.0,
+      Math.min(1, dt * 6),
     );
     this.pivot.rotation.y = this.currentAngle;
-    this.pivot.updateMatrix(); // Garantizar que se computen cambios
+
+    // Restaurar colisión cuando el cierre haya terminado
+    if (this.pendingCollisionRestore && this.collider && this.closedBox) {
+      if (Math.abs(this.currentAngle - this.targetAngle) < 0.01) {
+        this.currentAngle = this.targetAngle; // fijar exacto
+        this.pivot.rotation.y = this.targetAngle;
+        this.collider.copy(this.closedBox);
+        this.pendingCollisionRestore = false;
+      }
+    }
   }
 }

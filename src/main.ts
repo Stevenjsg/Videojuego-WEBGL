@@ -12,6 +12,7 @@ const ui = {
   overlayText: document.getElementById("overlay-text") as HTMLDivElement,
   overlayBtn: document.getElementById("overlay-btn") as HTMLButtonElement,
   fade: document.getElementById("fade") as HTMLDivElement,
+  interactPrompt: document.getElementById("interact-prompt") ?? undefined,
 };
 
 const game = new Game(mount, ui);

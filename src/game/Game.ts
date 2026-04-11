@@ -22,6 +22,7 @@ import { InteractSystem } from "@systems/InteractSystem";
 import { InventorySystem } from "@systems/InventorySystem";
 import { LEVEL1_SPAWN } from "@world/levelData";
 import { InteractiveDoor } from "@entities/InteractiveDoor";
+import { ZoneManager } from "@systems/ZoneManager";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
@@ -76,6 +77,7 @@ export class Game {
   private pickups: Pickup[] = [];
   private doors: InteractiveDoor[] = [];
   private interact!: InteractSystem;
+  private zoneManager!: ZoneManager;
 
   /** Meshes del nivel usados para el raycast de línea de visión del enemy */
   private levelMeshes: THREE.Object3D[] = [];
@@ -172,29 +174,34 @@ export class Game {
     this.initControls();
     this.initPostFX();
 
-    // ── 1) Apartment level (download once, no re-download) ──
-    setStage("Descargando nivel…");
-    setTitle("Descargando nivel…");
+    // ── 0) Inicializar Zone Manager ──
+    this.zoneManager = new ZoneManager(
+      this.scene,
+      this.collision,
+      (ratio) => setProgress(ratio),
+      (msg) => setStage(msg)
+    );
 
-    const levelBlob = await downloadWithProgress(GAME.LEVEL1.URL, (p) => {
-      if (p.ratio != null) setProgress(p.ratio * 0.6);
-    });
-
-    setStage("Procesando nivel…");
-    setTitle("Procesando nivel…");
-    const levelRoot = await loadGLBFromBlob(levelBlob, setStage);
-
+    // ── 1) Registrar Zonas Dinámicas (Apartment) ──
     const lp = GAME.LEVEL1.POS;
-    levelRoot.position.set(lp.x, lp.y, lp.z);
-    this.scene.add(levelRoot);
-    levelRoot.updateMatrixWorld(true);
-    const apartmentColliders = setupLevelMeshes(levelRoot);
-
-    levelRoot.traverse((child) => {
-      if ((child as any).isMesh) this.levelMeshes.push(child);
+    this.zoneManager.addZone({
+      id: "ModernApartment",
+      url: GAME.LEVEL1.URL,
+      position: new THREE.Vector3(lp.x, lp.y, lp.z),
+      // Caja muy generosa alrededor del apartamento (Z > 10)
+      triggerBox: new THREE.Box3(
+        new THREE.Vector3(-50, -10, 10),
+        new THREE.Vector3(50, 20, 100)
+      ),
+      onLoad: (root) => {
+        // Añadir a meshes del nivel para el enemigo (Opcional)
+        root.traverse((child) => {
+          if ((child as any).isMesh) this.levelMeshes.push(child);
+        });
+      }
     });
 
-    // ── 2) Zone 1 ──
+    // ── 2) Zone 1 (Core base spawn level) ──
     setStage("Cargando zona 1…");
     setTitle("Cargando zona 1…");
     const zone1 = await loadZone1(this.scene, GAME.LEVEL1_ZONE1.URL);
@@ -249,9 +256,15 @@ export class Game {
 
     // ── 4) Entities, collisions, UI ──
     this.initEntities(zone1.spawns);
-    this.initCollisions(
-      apartmentColliders.concat(zone1Colliders).concat(doorColliders),
-    );
+    
+    // Inicializamos colisiones base (solo las de zone1 y doors). El ZoneManager inyectará el Apartment automáticamente.
+    const baseColliders = zone1Colliders.concat(doorColliders);
+    this.initCollisions(baseColliders);
+
+    // Registrar callback dinámico para recompilarlas si una zona entra/sale
+    this.zoneManager.onCollisionsChanged = () => {
+      this.initCollisions(baseColliders.concat(this.zoneManager.getAllDynamicColliders()));
+    };
 
     // Player spawn: zone1 empty or hardcoded fallback
     const playerSpawn = zone1.spawns.player
@@ -405,11 +418,22 @@ export class Game {
   private update(dt: number) {
     this.controls.update();
     this.updatePlayer(dt);
+    
+    // Streaming chunking update
+    this.zoneManager.update(this.player.position);
 
     // --- gameplay input ---
     // Toggle linterna
     if (this.input.justPressed("KeyF")) {
       this.flashlight.toggle();
+    }
+
+    // Prompt de interacción: mostrar si miramos a una puerta o pickup cercano
+    const nearDoor   = this.interact.tryInteractDoor(3.5);
+    const nearPickup = this.interact.tryPickup(2.0);
+    const showPrompt = nearDoor !== null || nearPickup !== null;
+    if (this.ui.interactPrompt) {
+      this.ui.interactPrompt.classList.toggle("hidden", !showPrompt);
     }
 
     // Interactuar
@@ -436,9 +460,7 @@ export class Game {
         if (door) {
           if (!door.requiresKey || this.inventory.hasKey(door.requiresKey)) {
             door.toggle();
-            // Refrescamos colisiones manual de la puerta cambiando la Box3 en el collider ya referenciado en CollisionSystem (al darle play o abrir la puerta ya hace makeEmpty)
           } else {
-            // Opcional: Sonido/Mensaje de bloqueado
             console.log("Puerta bloqueada. Requiere:", door.requiresKey);
           }
         }

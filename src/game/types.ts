@@ -11,6 +11,9 @@ export type GameUI = {
 
   // Debug panel (opcional)
   debug?: HTMLDivElement;
+
+  // Prompt de interacción (E - Abrir / Cerrar)
+  interactPrompt?: HTMLElement;
 };
 
 export type GameState = "LOADING" | "PLAYING" | "GAME_OVER";
