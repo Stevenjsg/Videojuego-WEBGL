@@ -120,6 +120,20 @@ export class ZoneManager {
     console.log(`[ZoneManager] Unloaded zone: ${zone.id}`);
   }
 
+  /** Force-load a zone regardless of trigger box position. */
+  public forceLoadZone(id: string) {
+    const zone = this.zones.get(id);
+    if (!zone || zone.isLoaded || zone.loadPromise) return;
+    this.loadZone(zone);
+  }
+
+  /** Force-unload a zone regardless of trigger box position. */
+  public forceUnloadZone(id: string) {
+    const zone = this.zones.get(id);
+    if (!zone || !zone.isLoaded || !zone.rootObject) return;
+    this.unloadZone(zone);
+  }
+
   public getAllDynamicColliders(): THREE.Box3[] {
     const list: THREE.Box3[] = [];
     for (const zone of this.zones.values()) {
