@@ -6,13 +6,15 @@ export const GAME = {
     RADIUS: 0.3,
     BASE_SPEED: 1.5,
     SUBSTEPS: 2,
+    HP: 3,
   },
 
   ENEMY: {
     URL: "/models/enemy/azure_automaton.glb",
     SCALE: 0.6,
-    SPEED: 1.5,
-    CATCH_DISTANCE: 1.0,
+    SPEED: 2.8,
+    CATCH_DISTANCE: 0.5,
+    HIT_GRACE_SECONDS: 2.5,
     SPAWN: { x: 5.7, y: 0.2, z: 0.5 },
   },
 

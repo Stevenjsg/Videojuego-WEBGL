@@ -14,6 +14,15 @@ export type GameUI = {
 
   // Prompt de interacción (E - Abrir / Cerrar)
   interactPrompt?: HTMLElement;
+  interactText?: HTMLElement;
+
+  // Battery UI
+  batteryContainer?: HTMLElement;
+  batteryBarFill?: HTMLElement;
+  batteryText?: HTMLElement;
+
+  // Locked door message
+  lockedMessage?: HTMLElement;
 };
 
 export type GameState = "LOADING" | "PLAYING" | "GAME_OVER";
