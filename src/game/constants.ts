@@ -16,6 +16,14 @@ export const GAME = {
     CATCH_DISTANCE: 0.5,
     HIT_GRACE_SECONDS: 2.5,
     SPAWN: { x: 5.7, y: 0.2, z: 0.5 },
+    /** Rango de detección base (sin correr) */
+    DETECTION_RANGE: 8,
+    /** Rango de detección extra si el player corre */
+    DETECTION_RANGE_RUNNING: 14,
+    /** Segundos que el enemy busca en la última posición conocida */
+    SEARCH_DURATION: 4,
+    /** Segundos de freeze máximo antes de romperlo */
+    FREEZE_BREAK_TIME: 1.5,
   },
 
   LEVEL1: {
