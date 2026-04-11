@@ -25,6 +25,10 @@ export async function loadEXREnvironment(
   const envRT = pmrem.fromEquirectangular(exrTex);
   const envMap = envRT.texture;
 
+  // Break the render-target association so sampling envMap during
+  // EffectComposer passes doesn't trigger a WebGL feedback loop.
+  envMap.isRenderTargetTexture = false;
+
   scene.environment = envMap;
   (scene as any).environmentIntensity = intensity;
 
