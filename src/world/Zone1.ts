@@ -52,6 +52,7 @@ export async function loadZone1(
             spawns.enemy = node;
             node.visible = false;
           } else if (node.name.includes("Spawn_Puerta_")) {
+            node.visible = false;
             const requiresKey = node.name.includes("Llave_1")
               ? "Llave 1"
               : node.name.includes("Llave_Especial")
