@@ -20,7 +20,8 @@ import { Flashlight } from "@entities/Flashlight";
 import { Pickup } from "@entities/Pickup";
 import { InteractSystem } from "@systems/InteractSystem";
 import { InventorySystem } from "@systems/InventorySystem";
-import { PICKUPS, LEVEL1_SPAWN } from "@world/levelData";
+import { LEVEL1_SPAWN } from "@world/levelData";
+import { InteractiveDoor } from "@entities/InteractiveDoor";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
@@ -29,10 +30,10 @@ import type { GameUI, GameState } from "./types";
 
 /** Maps Zone1 item type names to PickupType + model URL. */
 const ZONE1_ITEM_MAP: Record<string, { pickup: PickupType; url: string }> = {
-  Pila:       { pickup: "battery",   url: "/models/assets/battery.glb" },
-  "Llave 1":  { pickup: "key",       url: "/models/assets/battery.glb" }, // TODO: key model
-  "Llave 2":  { pickup: "key",       url: "/models/assets/battery.glb" }, // TODO: key model
-  Fusible:    { pickup: "objective",  url: "/models/assets/battery.glb" }, // TODO: fusible model
+  Pila: { pickup: "battery", url: "/models/assets/battery.glb" },
+  "Llave 1": { pickup: "key", url: "/models/assets/battery.glb" }, // TODO: key model
+  "Llave 2": { pickup: "key", url: "/models/assets/battery.glb" }, // TODO: key model
+  Fusible: { pickup: "objective", url: "/models/assets/battery.glb" }, // TODO: fusible model
 };
 import { GAME } from "./constants";
 import { hideOverlay, setGameOverUI } from "./state";
@@ -72,6 +73,7 @@ export class Game {
   private flashlight!: Flashlight;
   private inventory!: InventorySystem;
   private pickups: Pickup[] = [];
+  private doors: InteractiveDoor[] = [];
   private interact!: InteractSystem;
 
   /** Meshes del nivel usados para el raycast de línea de visión del enemy */
@@ -200,6 +202,45 @@ export class Game {
     zone1.map.updateMatrixWorld(true);
     const zone1Colliders = setupLevelMeshes(zone1.map);
 
+    // ── 2.5) Puertas ──
+    setStage("Cargando puertas…");
+    setTitle("Cargando puertas…");
+    const doorBlob = await downloadWithProgress(
+      `/models/assets/puerta_interactiva.glb?v=${Date.now()}`,
+      (p) => {
+        if (p.ratio != null) setProgress(p.ratio);
+      },
+    );
+    const doorRoot = await loadGLBFromBlob(doorBlob, setStage);
+    const doorColliders: THREE.Box3[] = [];
+
+    for (const doorSpawn of zone1.spawns.doors) {
+      const doorModel = doorRoot.clone();
+
+      const doorSpawnWorldPos = new THREE.Vector3();
+      const doorSpawnWorldQuat = new THREE.Quaternion();
+      const doorSpawnWorldScale = new THREE.Vector3();
+      doorSpawn.node.getWorldPosition(doorSpawnWorldPos);
+      doorSpawn.node.getWorldQuaternion(doorSpawnWorldQuat);
+      doorSpawn.node.getWorldScale(doorSpawnWorldScale);
+
+      const interactiveDoor = new InteractiveDoor({
+        model: doorModel,
+        position: doorSpawnWorldPos,
+        quaternion: doorSpawnWorldQuat,
+        scale: doorSpawnWorldScale,
+        requiresKey: doorSpawn.requiresKey,
+      });
+
+      this.scene.add(interactiveDoor.root);
+      this.doors.push(interactiveDoor);
+
+      if (interactiveDoor.collider) {
+        doorColliders.push(interactiveDoor.collider);
+      }
+      doorColliders.push(...setupLevelMeshes(interactiveDoor.root));
+    }
+
     // ── 3) HDRI ──
     setStage("Cargando iluminación…");
     setTitle("Cargando iluminación…");
@@ -207,11 +248,15 @@ export class Game {
 
     // ── 4) Entities, collisions, UI ──
     this.initEntities(zone1.spawns);
-    this.initCollisions(apartmentColliders.concat(zone1Colliders));
+    this.initCollisions(
+      apartmentColliders.concat(zone1Colliders).concat(doorColliders),
+    );
 
     // Player spawn: zone1 empty or hardcoded fallback
     const playerSpawn = zone1.spawns.player
-      ? new THREE.Vector3().setFromMatrixPosition(zone1.spawns.player.matrixWorld)
+      ? new THREE.Vector3().setFromMatrixPosition(
+          zone1.spawns.player.matrixWorld,
+        )
       : new THREE.Vector3(...LEVEL1_SPAWN);
     this.initSpawn(playerSpawn);
     this.initUI();
@@ -296,25 +341,15 @@ export class Game {
     });
     this.inventory = new InventorySystem(this.flashlight);
 
-    // Pickups: apartment hardcoded
-    this.pickups = PICKUPS.map(
-      (p) =>
-        new Pickup({
-          type: p.type as any,
-          url:
-            p.type === "flashlight"
-              ? "/models/assets/flashlight.glb"
-              : "/models/assets/battery.glb",
-          position: new THREE.Vector3(p.pos[0], p.pos[1], p.pos[2]),
-          scale: p.scale ?? 1,
-          batteryAmount: (p as any).amount ?? 0.25,
-        }),
-    );
+    // Pickups: apartment hardcoded eliminated (baterias del spawn point)
+    this.pickups = [];
 
     // Pickups: zone1 spawns (Spawn_Item_ empties from GLB)
     if (spawns) {
       for (const item of spawns.items) {
-        const wp = new THREE.Vector3().setFromMatrixPosition(item.node.matrixWorld);
+        const wp = new THREE.Vector3().setFromMatrixPosition(
+          item.node.matrixWorld,
+        );
         const type = ZONE1_ITEM_MAP[item.type];
         if (!type) continue;
 
@@ -323,7 +358,7 @@ export class Game {
             type: type.pickup,
             url: type.url,
             position: wp,
-            scale: 0.01,
+            scale: 0.15,
             batteryAmount: type.pickup === "battery" ? 0.25 : undefined,
             keyName: type.pickup === "key" ? item.type : undefined,
           }),
@@ -334,7 +369,7 @@ export class Game {
     for (const p of this.pickups) this.scene.add(p.root);
 
     // Interacciones
-    this.interact = new InteractSystem(this.camera, this.pickups);
+    this.interact = new InteractSystem(this.camera, this.pickups, this.doors);
   }
 
   private initCollisions(colliders: THREE.Box3[]) {
@@ -381,13 +416,37 @@ export class Game {
       const picked = this.interact.tryPickup(2.0);
       if (picked) {
         switch (picked.type) {
-          case "flashlight": this.inventory.pickupFlashlight(); break;
-          case "battery":    this.inventory.pickupBattery(picked.batteryAmount); break;
-          case "key":        this.inventory.pickupKey(picked.cfg.keyName ?? ""); break;
-          case "objective":  this.inventory.pickupObjective(); break;
+          case "flashlight":
+            this.inventory.pickupFlashlight();
+            break;
+          case "battery":
+            this.inventory.pickupBattery(picked.batteryAmount);
+            break;
+          case "key":
+            this.inventory.pickupKey(picked.cfg.keyName ?? "");
+            break;
+          case "objective":
+            this.inventory.pickupObjective();
+            break;
         }
         this.interact.removePickup(picked, this.scene);
+      } else {
+        const door = this.interact.tryInteractDoor(3.5);
+        if (door) {
+          if (!door.requiresKey || this.inventory.hasKey(door.requiresKey)) {
+            door.toggle();
+            // Refrescamos colisiones manual de la puerta cambiando la Box3 en el collider ya referenciado en CollisionSystem (al darle play o abrir la puerta ya hace makeEmpty)
+          } else {
+            // Opcional: Sonido/Mensaje de bloqueado
+            console.log("Puerta bloqueada. Requiere:", door.requiresKey);
+          }
+        }
       }
+    }
+
+    // Actualizar puertas
+    for (const door of this.doors) {
+      door.update(dt);
     }
 
     this.flashlight.update(dt);
