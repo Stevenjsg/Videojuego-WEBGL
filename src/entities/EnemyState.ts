@@ -3,8 +3,8 @@ import { Enemy } from "@entities/Enemy";
 import { EnemySystem } from "@systems/EnemySystem";
 import { CollisionSystem } from "@systems/CollisionSystem";
 
-/** The three high-level behavior states for any enemy in the game. */
-export type EnemyBehaviorState = "IDLE" | "CHASE" | "ATTACK";
+/** High-level behavior states for any enemy in the game. */
+export type EnemyBehaviorState = "IDLE" | "CHASE" | "SEARCH" | "ATTACK";
 
 export type EnemySpawnOptions = {
   /** World position where the enemy is placed. */

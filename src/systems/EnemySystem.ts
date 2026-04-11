@@ -7,6 +7,14 @@ export type EnemySystemConfig = {
   speed: number;
   catchDistance: number;
   graceSeconds?: number;
+  /** Segundos máximos de freeze antes de romperlo */
+  freezeBreakTime?: number;
+  /** Segundos que busca en la última posición conocida */
+  searchDuration?: number;
+  /** Rango de detección base */
+  detectionRange?: number;
+  /** Rango de detección cuando el player corre */
+  detectionRangeRunning?: number;
 };
 
 export type EnemyAdvancedInput = {
@@ -16,6 +24,9 @@ export type EnemyAdvancedInput = {
 
   /** Si está apagada el enemy siempre se mueve sin restricciones */
   flashlightOn: boolean;
+
+  /** Si el player está corriendo (Shift) */
+  playerRunning: boolean;
 
   objectivesCollected: number;
   objectivesTotal: number;
@@ -38,6 +49,20 @@ export class EnemySystem {
   public lastInFrustum = false;
   public lastHasLOS = false;
   public lastFrozen = false;
+
+  // Config
+  private freezeBreakTime: number;
+  private searchDuration: number;
+  private detectionRange: number;
+  private detectionRangeRunning: number;
+
+  // Freeze break timer
+  private freezeTimer = 0;
+
+  // Last known position + search state
+  private lastKnownPos = new THREE.Vector3();
+  private hasLastKnownPos = false;
+  private searchTimer = 0;
 
   // Frustum
   private frustum = new THREE.Frustum();
@@ -63,6 +88,10 @@ export class EnemySystem {
     this.speed = cfg.speed;
     this.catchDistance = cfg.catchDistance;
     this.grace = cfg.graceSeconds ?? 0;
+    this.freezeBreakTime = cfg.freezeBreakTime ?? 1.5;
+    this.searchDuration = cfg.searchDuration ?? 4;
+    this.detectionRange = cfg.detectionRange ?? 8;
+    this.detectionRangeRunning = cfg.detectionRangeRunning ?? 14;
   }
 
   /** Compat con llamadas antiguas (sin flashlight ni occluders) */
@@ -72,6 +101,7 @@ export class EnemySystem {
       camera,
       playerPos,
       flashlightOn: true,
+      playerRunning: false,
       objectivesCollected: 0,
       objectivesTotal: 0,
     });
@@ -90,66 +120,75 @@ export class EnemySystem {
 
     const d = this.enemy.position.distanceTo(playerPos);
 
-    if (d > this.enemy.detectionRange) {
-      this.behaviorState = "IDLE";
-      this.enemy.setAnimState("idle");
-      return false;
-    }
+    // Rango de detección dinámico: más lejos si el player corre
+    const activeRange = input.playerRunning
+      ? this.detectionRangeRunning
+      : this.detectionRange;
 
     // ── Visibilidad ──────────────────────────────────────────────────────────
-    // El enemy sólo se congela si:
-    //   1. La linterna está ENCENDIDA
-    //   2. El enemy está dentro del frustum de la cámara
-    //   3. No hay ningún obstáculo entre la cámara y el enemy (LOS)
     const inFrustum = this.isInFrustum(camera);
     let los: boolean;
     if (inFrustum) {
-      // Raycast is expensive — only run every 3rd frame, cache result
       if (this.losFrame++ % 3 === 0) {
-        this.cachedLOS = this.hasLineOfSight(camera, input.occluderMeshes ?? []);
+        this.cachedLOS = this.hasLineOfSight(
+          camera,
+          input.occluderMeshes ?? [],
+        );
       }
       los = this.cachedLOS;
     } else {
       los = false;
     }
-    const freeze = input.flashlightOn && inFrustum && los;
+    const wantsFreeze = input.flashlightOn && inFrustum && los;
 
     this.lastInFrustum = inFrustum;
     this.lastHasLOS = los;
+
+    // ── Freeze con break después de freezeBreakTime ──────────────────────────
+    let freeze: boolean;
+    if (wantsFreeze) {
+      this.freezeTimer += dt;
+      freeze = this.freezeTimer < this.freezeBreakTime;
+    } else {
+      this.freezeTimer = 0;
+      freeze = false;
+    }
     this.lastFrozen = freeze;
 
     this.enemyPrev.copy(this.enemy.position);
 
-    if (!freeze) {
-      // Velocidad dinámica: lejos → rápido, cerca → lento
-      const near = 2.0;
-      const far = 10.0;
-      const t = THREE.MathUtils.clamp((d - near) / (far - near), 0, 1);
-      let finalSpeed = THREE.MathUtils.lerp(0.35, this.speed, t);
-
-      // Presión por objetivos recogidos
-      const ratio =
-        input.objectivesTotal > 0
-          ? input.objectivesCollected / input.objectivesTotal
-          : 0;
-      finalSpeed *= 1 + 0.5 * ratio;
-
-      this.tmpDir.copy(playerPos).sub(this.enemy.position);
-      this.tmpDir.y = 0;
-
-      if (this.tmpDir.lengthSq() > 0.0001) {
-        this.tmpDir.normalize();
-        this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
-        this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
-        this.enemy.setAnimState("walk");
-        this.behaviorState = "CHASE";
-      } else {
-        this.enemy.setAnimState("idle");
-        this.behaviorState = "IDLE";
-      }
-    } else {
+    // ── Decidir target y estado ──────────────────────────────────────────────
+    if (freeze) {
+      // Congelado por la linterna (aún no rompió el freeze)
       this.enemy.setAnimState("idle");
       this.behaviorState = "IDLE";
+    } else if (d <= activeRange) {
+      // Player dentro del rango → CHASE, guardar última posición conocida
+      this.lastKnownPos.copy(playerPos);
+      this.hasLastKnownPos = true;
+      this.searchTimer = this.searchDuration;
+      this.moveToward(playerPos, d, dt, input);
+      this.behaviorState = "CHASE";
+    } else if (this.hasLastKnownPos && this.searchTimer > 0) {
+      // Player fuera de rango pero tenemos última posición → SEARCH
+      const dSearch = this.enemy.position.distanceTo(this.lastKnownPos);
+      if (dSearch > 0.8) {
+        // Ir hacia la última posición conocida (velocidad reducida)
+        this.moveToward(this.lastKnownPos, dSearch, dt, input, 0.6);
+        this.behaviorState = "SEARCH";
+      } else {
+        // Llegó a la posición, esperar mientras busca
+        this.enemy.setAnimState("idle");
+        this.behaviorState = "SEARCH";
+      }
+      this.searchTimer -= dt;
+      if (this.searchTimer <= 0) {
+        this.hasLastKnownPos = false;
+      }
+    } else {
+      // Nada que hacer
+      this.behaviorState = "IDLE";
+      this.enemy.setAnimState("idle");
     }
 
     this.collision.resolveSphere(
@@ -158,9 +197,45 @@ export class EnemySystem {
       this.enemy.radius,
     );
 
-    const caught = this.enemy.position.distanceTo(playerPos) < this.catchDistance;
+    const caught =
+      this.enemy.position.distanceTo(playerPos) < this.catchDistance;
     if (caught) this.behaviorState = "ATTACK";
     return caught;
+  }
+
+  // ── Movement helper ────────────────────────────────────────────────────────
+
+  private moveToward(
+    target: THREE.Vector3,
+    dist: number,
+    dt: number,
+    input: EnemyAdvancedInput,
+    speedMult: number = 1,
+  ) {
+    // Velocidad dinámica: lejos → rápido, cerca → lento
+    const near = 2.0;
+    const far = 10.0;
+    const t = THREE.MathUtils.clamp((dist - near) / (far - near), 0, 1);
+    let finalSpeed = THREE.MathUtils.lerp(0.35, this.speed, t) * speedMult;
+
+    // Presión por objetivos recogidos
+    const ratio =
+      input.objectivesTotal > 0
+        ? input.objectivesCollected / input.objectivesTotal
+        : 0;
+    finalSpeed *= 1 + 0.5 * ratio;
+
+    this.tmpDir.copy(target).sub(this.enemy.position);
+    this.tmpDir.y = 0;
+
+    if (this.tmpDir.lengthSq() > 0.0001) {
+      this.tmpDir.normalize();
+      this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
+      this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
+      this.enemy.setAnimState("walk");
+    } else {
+      this.enemy.setAnimState("idle");
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
