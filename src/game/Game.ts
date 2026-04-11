@@ -38,9 +38,13 @@ const ZONE1_ITEM_MAP: Record<
   Pila: { pickup: "battery", url: "/models/assets/battery.glb" },
   "Llave 1": { pickup: "key", url: "/models/assets/old_key.glb", scale: 0.1 },
   "Llave 2": { pickup: "key", url: "/models/assets/old_key.glb", scale: 0.1 },
-  "Llave Especial": { pickup: "key", url: "/models/assets/old_key.glb", scale: 0.1 },
+  "Llave Especial": {
+    pickup: "key",
+    url: "/models/assets/old_key.glb",
+    scale: 0.1,
+  },
   Fusible: { pickup: "objective", url: "/models/assets/fuse.glb", scale: 0.2 },
-  Fuse: { pickup: "objective", url: "/models/assets/fuse.glb", scale: 0.2 },
+  Fuse: { pickup: "objective", url: "/models/assets/fuse.glb", scale: 1 },
 };
 import { GAME } from "./constants";
 import { hideOverlay, setGameOverUI } from "./state";
@@ -89,6 +93,7 @@ export class Game {
   // Hit / HP system
   private playerHP: number = GAME.PLAYER.HP;
   private hitGraceTimer: number = 0;
+  private playerSpeedPenalty: number = 0; // 0.0 – 1.0 (fraction of speed lost)
 
   private prevPos = new THREE.Vector3();
   private raf = 0;
@@ -464,6 +469,10 @@ export class Game {
     this.enemySystem = new EnemySystem(this.enemy, this.collision, {
       speed: GAME.ENEMY.SPEED,
       catchDistance: GAME.ENEMY.CATCH_DISTANCE,
+      freezeBreakTime: GAME.ENEMY.FREEZE_BREAK_TIME,
+      searchDuration: GAME.ENEMY.SEARCH_DURATION,
+      detectionRange: GAME.ENEMY.DETECTION_RANGE,
+      detectionRangeRunning: GAME.ENEMY.DETECTION_RANGE_RUNNING,
     });
     const dir = new THREE.Vector3(5, 0, -2).sub(this.enemy.position);
     dir.y = 0;
@@ -630,6 +639,7 @@ export class Game {
       camera: this.camera,
       playerPos: this.player.position,
       flashlightOn: this.flashlight.isOn,
+      playerRunning: this.controls.getSpeedMultiplier() > 1,
       objectivesCollected: this.inventory.objectives,
       objectivesTotal: this.inventory.objectivesTotal,
       occluderMeshes: this.levelMeshes,
@@ -640,13 +650,18 @@ export class Game {
       this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
 
       if (this.playerHP <= 0) {
+        // 3er golpe → Game Over
         this.setGameOver();
       } else if (this.playerHP === 1) {
-        // 2do golpe: iniciar respiración pesada
+        // 2do golpe: -5% extra velocidad (total -15%) + respiración pesada
+        this.playerSpeedPenalty = 0.15;
         if (this.breathingAudio?.buffer && !this.breathingPlaying) {
           this.breathingAudio.play();
           this.breathingPlaying = true;
         }
+      } else if (this.playerHP === 2) {
+        // 1er golpe: -10% velocidad
+        this.playerSpeedPenalty = 0.10;
       }
     }
 
@@ -806,7 +821,10 @@ export class Game {
 
   private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();
-    const speed = GAME.PLAYER.BASE_SPEED * this.controls.getSpeedMultiplier();
+    const speed =
+      GAME.PLAYER.BASE_SPEED *
+      this.controls.getSpeedMultiplier() *
+      (1 - this.playerSpeedPenalty);
 
     const steps = GAME.PLAYER.SUBSTEPS;
     const stepDt = dt / steps;
