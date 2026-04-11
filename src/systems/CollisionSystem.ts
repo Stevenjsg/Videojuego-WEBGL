@@ -250,28 +250,41 @@ export class CollisionSystem {
       pos.copy(prevPos).add(this.tmpMove);
     }
 
-    if (!this.intersectsSphere(pos, radius)) return;
+    // Altura de los pies de la esfera (para ignorar suelos)
+    const feetY = pos.y - radius;
+
+    if (!this.intersectsSphere(pos, radius, feetY)) return;
 
     this.tmpTryX.set(prevPos.x + this.tmpMove.x, pos.y, prevPos.z);
-    if (this.intersectsSphere(this.tmpTryX, radius)) this.tmpTryX.x = prevPos.x;
+    if (this.intersectsSphere(this.tmpTryX, radius, feetY))
+      this.tmpTryX.x = prevPos.x;
 
     this.tmpTryZ.set(this.tmpTryX.x, pos.y, prevPos.z + this.tmpMove.z);
-    if (this.intersectsSphere(this.tmpTryZ, radius)) this.tmpTryZ.z = prevPos.z;
+    if (this.intersectsSphere(this.tmpTryZ, radius, feetY))
+      this.tmpTryZ.z = prevPos.z;
 
     pos.copy(this.tmpTryZ);
 
-    if (this.intersectsSphere(pos, radius)) pos.copy(prevPos);
+    if (this.intersectsSphere(pos, radius, feetY)) pos.copy(prevPos);
   }
 
-  private intersectsSphere(pos: THREE.Vector3, radius: number) {
+  private intersectsSphere(
+    pos: THREE.Vector3,
+    radius: number,
+    feetY: number = -Infinity,
+  ) {
     const r2 = radius * radius;
     this.tmpCenter.copy(pos);
+    const stepOffset = 0.5;
 
     for (const c of this.colliders) {
       if (this.ignoreFloors && this.isFloorLike(c)) continue;
       if (this.isBadCollider(c)) continue;
 
       const box = c.box;
+
+      // Ignorar colliders que actúan como suelo bajo los pies de la esfera
+      if (box.max.y <= feetY + stepOffset) continue;
 
       this.tmpClosest.set(
         THREE.MathUtils.clamp(this.tmpCenter.x, box.min.x, box.max.x),
