@@ -30,6 +30,7 @@ import type { GameUI, GameState } from "./types";
 
 /** Maps Zone1 item type names to PickupType + model URL. */
 const ZONE1_ITEM_MAP: Record<string, { pickup: PickupType; url: string }> = {
+  flashlight: { pickup: "flashlight", url: "/models/assets/flashlight.glb" },
   Pila: { pickup: "battery", url: "/models/assets/battery.glb" },
   "Llave 1": { pickup: "key", url: "/models/assets/battery.glb" }, // TODO: key model
   "Llave 2": { pickup: "key", url: "/models/assets/battery.glb" }, // TODO: key model

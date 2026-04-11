@@ -63,6 +63,7 @@ export async function loadZone1(
             node.visible = false;
           } else if (node.name.includes("Spawn_Item_")) {
             let itemType = "Desconocido";
+            if (node.name.includes("flashlight")) itemType = "flashlight";
             if (node.name.includes("Pila")) itemType = "Pila";
             if (node.name.includes("Llave_1")) itemType = "Llave 1";
             if (node.name.includes("Llave_2")) itemType = "Llave 2";
