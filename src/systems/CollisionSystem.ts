@@ -53,6 +53,11 @@ export class CollisionSystem {
       .map((b, i) => ({ name: `${namePrefix}_${i}`, box: b }));
   }
 
+  removeColliders(boxes: THREE.Box3[]) {
+    const toRemove = new Set(boxes);
+    this.colliders = this.colliders.filter((c) => !toRemove.has(c.box));
+  }
+
   buildFromObjects(objects: THREE.Object3D[]) {
     this.colliders = [];
     for (const obj of objects) {
