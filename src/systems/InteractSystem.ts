@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Pickup } from "@entities/Pickup";
+import { InteractiveDoor } from "@entities/InteractiveDoor";
 
 export class InteractSystem {
   private raycaster = new THREE.Raycaster();
@@ -9,6 +10,7 @@ export class InteractSystem {
   constructor(
     private camera: THREE.Camera,
     private pickups: Pickup[],
+    private doors: InteractiveDoor[] = []
   ) {}
 
   /** Intenta recoger el pickup mirando al frente (raycast). */
@@ -26,6 +28,26 @@ export class InteractSystem {
     if (!hitRoot) return null;
 
     return this.pickups.find((p) => p.root === hitRoot) ?? null;
+  }
+
+  /** Intenta interactuar con una puerta. */
+  tryInteractDoor(maxDistance = 2.5): InteractiveDoor | null {
+    this.camera.getWorldDirection(this.forward);
+    this.raycaster.set(this.getCameraWorldPos(), this.forward);
+    this.raycaster.far = maxDistance;
+
+    const objects = this.doors.map((d) => d.root);
+    const hits = this.raycaster.intersectObjects(objects, true);
+
+    if (hits.length === 0) return null;
+
+    let cur: THREE.Object3D | null = hits[0].object;
+    for (let i = 0; i < 10 && cur; i++) {
+      const door = this.doors.find((d) => d.root === cur);
+      if (door) return door;
+      cur = cur.parent;
+    }
+    return null;
   }
 
   /** Compatibilidad: si antes llamabas update() */
@@ -53,3 +75,4 @@ export class InteractSystem {
     return null;
   }
 }
+
