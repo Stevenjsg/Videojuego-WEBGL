@@ -22,14 +22,20 @@
         <div id="top-left">
           <div id="debug" class="debug hidden"></div>
           <div id="status">Objetos: <span id="items">0</span>/<span id="itemsTotal">0</span></div>
+          <div id="battery-container" class="hidden">
+            <span id="battery-icon">&#x1F50B;</span>
+            <div id="battery-bar"><div id="battery-bar-fill"></div></div>
+            <span id="battery-text">100%</span>
+          </div>
           <div id="hint">WASD para moverte. Click para capturar ratón.</div>
         </div>
 
         <div id="center">
           <div id="crosshair"></div>
           <div id="interact-prompt" class="hidden">
-            <span class="key-badge">E</span> Abrir / Cerrar
+            <span class="key-badge">E</span> <span id="interact-text">Abrir / Cerrar</span>
           </div>
+          <div id="locked-message" class="hidden"></div>
         </div>
 
         <!-- Mensajes grandes (game over / win / etc.) -->

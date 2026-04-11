@@ -78,6 +78,74 @@ body {
   line-height: 1.25;
 }
 
+/* Battery bar */
+#battery-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  backdrop-filter: blur(6px);
+  font-size: 13px;
+}
+#battery-container.hidden {
+  display: none;
+}
+#battery-icon {
+  font-size: 16px;
+}
+#battery-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  min-width: 100px;
+}
+#battery-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: #4ade80;
+  border-radius: 999px;
+  transition: width 200ms linear, background-color 300ms ease;
+}
+#battery-bar-fill.low {
+  background: #fb923c;
+}
+#battery-bar-fill.critical {
+  background: #ef4444;
+}
+#battery-text {
+  min-width: 36px;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Locked door message */
+#locked-message {
+  position: absolute;
+  bottom: 130px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(180, 40, 40, 0.7);
+  border: 1px solid rgba(255, 80, 80, 0.4);
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-size: 14px;
+  color: #fff;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+  transition: opacity 300ms ease;
+  pointer-events: none;
+}
+#locked-message.hidden {
+  display: none;
+}
+
 /* Centro: crosshair */
 #center {
   position: absolute;

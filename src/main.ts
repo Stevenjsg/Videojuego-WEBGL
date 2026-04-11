@@ -13,6 +13,11 @@ const ui = {
   overlayBtn: document.getElementById("overlay-btn") as HTMLButtonElement,
   fade: document.getElementById("fade") as HTMLDivElement,
   interactPrompt: document.getElementById("interact-prompt") ?? undefined,
+  interactText: document.getElementById("interact-text") ?? undefined,
+  batteryContainer: document.getElementById("battery-container") ?? undefined,
+  batteryBarFill: document.getElementById("battery-bar-fill") ?? undefined,
+  batteryText: document.getElementById("battery-text") ?? undefined,
+  lockedMessage: document.getElementById("locked-message") ?? undefined,
 };
 
 const game = new Game(mount, ui);
