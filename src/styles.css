@@ -146,6 +146,46 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Prompt de interacción (puerta, objetos) */
+#interact-prompt {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(6px);
+  transition: opacity 150ms ease;
+  white-space: nowrap;
+}
+
+#interact-prompt.hidden {
+  display: none;
+}
+
+.key-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: #fff;
+}
+
 /* Fade (para sustos/transición) */
 #fade {
   position: absolute;
