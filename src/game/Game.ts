@@ -327,6 +327,10 @@ export class Game {
         this.ambienceAudio!.setBuffer(buffer);
         this.ambienceAudio!.setLoop(true);
         this.ambienceAudio!.setVolume(0.08);
+        // Si el resume ya pasó, reproducir ahora
+        if (this.audioResumed && !this.ambienceAudio!.isPlaying) {
+          this.ambienceAudio!.play();
+        }
       },
     );
 
@@ -645,10 +649,19 @@ export class Game {
       occluderMeshes: this.levelMeshes,
     });
 
+    const enemyDist = this.enemy.position.distanceTo(this.player.position);
+    if (enemyDist < 2) {
+      console.log(
+        `[ENEMY] dist=${enemyDist.toFixed(3)} caught=${caught} grace=${this.hitGraceTimer.toFixed(2)} state=${this.enemySystem.behaviorState}`,
+      );
+    }
+
     if (caught && this.hitGraceTimer <= 0) {
       this.playerHP--;
       this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
-
+      console.log(
+        `[HIT] HP: ${this.playerHP}/${GAME.PLAYER.HP} | speedPenalty: ${this.playerSpeedPenalty} → ${this.playerHP === 2 ? 0.1 : this.playerHP === 1 ? 0.15 : "DEAD"}`,
+      );
       if (this.playerHP <= 0) {
         // 3er golpe → Game Over
         this.setGameOver();
@@ -661,7 +674,7 @@ export class Game {
         }
       } else if (this.playerHP === 2) {
         // 1er golpe: -10% velocidad
-        this.playerSpeedPenalty = 0.10;
+        this.playerSpeedPenalty = 0.1;
       }
     }
 

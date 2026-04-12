@@ -207,16 +207,12 @@ export class EnemySystem {
 
   private moveToward(
     target: THREE.Vector3,
-    dist: number,
+    _dist: number,
     dt: number,
     input: EnemyAdvancedInput,
     speedMult: number = 1,
   ) {
-    // Velocidad dinámica: lejos → rápido, cerca → lento
-    const near = 2.0;
-    const far = 10.0;
-    const t = THREE.MathUtils.clamp((dist - near) / (far - near), 0, 1);
-    let finalSpeed = THREE.MathUtils.lerp(0.35, this.speed, t) * speedMult;
+    let finalSpeed = this.speed * speedMult;
 
     // Presión por objetivos recogidos
     const ratio =
