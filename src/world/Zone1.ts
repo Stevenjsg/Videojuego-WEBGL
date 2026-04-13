@@ -10,6 +10,7 @@ export interface LevelSpawns {
   doors: Array<{ node: THREE.Object3D; requiresKey: string | null }>;
   items: Array<{ type: string; node: THREE.Object3D }>;
   lights: Array<{ node: THREE.Object3D; lightType: LightType }>;
+  fuseBox: THREE.Object3D | null;
 }
 
 export interface LevelData {
@@ -36,6 +37,7 @@ export async function loadZone1(
           doors: [],
           items: [],
           lights: [],
+          fuseBox: null,
         };
 
         // 2. Recorremos todo el nivel
@@ -47,6 +49,10 @@ export async function loadZone1(
           }
 
           // --- B. LECTURA DE SPAWNS (EMPTIES) ---
+          // Fuse_Box: mesh estático con el que el player interactúa
+          if (node.name.toLowerCase().includes("fuse_box") && !spawns.fuseBox) {
+            spawns.fuseBox = node;
+          }
           if (node.name.includes("Spawn_Player")) {
             spawns.player = node;
             node.visible = false;

@@ -95,6 +95,12 @@ export class Game {
   private hitGraceTimer: number = 0;
   private playerSpeedPenalty: number = 0; // 0.0 – 1.0 (fraction of speed lost)
 
+  // Puzzle del fusible: necesario para abrir la puerta especial
+  private fuseBox: THREE.Object3D | null = null;
+  private fuseBoxPos = new THREE.Vector3();
+  private hasFuse = false;
+  private puzzleSolved = false;
+
   private prevPos = new THREE.Vector3();
   private raf = 0;
   private state: GameState = "LOADING";
@@ -286,6 +292,12 @@ export class Game {
     setStage("Cargando iluminación…");
     setTitle("Cargando iluminación…");
     await this.initEnvironment();
+
+    // Fuse_Box: guardar referencia y posición mundial para interacción
+    if (zone1.spawns.fuseBox) {
+      this.fuseBox = zone1.spawns.fuseBox;
+      this.fuseBox.getWorldPosition(this.fuseBoxPos);
+    }
 
     // ── 4) Entities, collisions, UI ──
     this.initEntities(zone1.spawns);
@@ -517,7 +529,12 @@ export class Game {
             position: wp,
             scale: type.scale ?? 0.15,
             batteryAmount: type.pickup === "battery" ? 0.25 : undefined,
-            keyName: type.pickup === "key" ? item.type : undefined,
+            keyName:
+              type.pickup === "key"
+                ? item.type
+                : item.type === "Fuse"
+                  ? "Fuse"
+                  : undefined,
           }),
         );
       }
@@ -574,7 +591,9 @@ export class Game {
     // Prompt de interacción: mostrar si miramos a una puerta o pickup cercano
     const nearDoor = this.interact.tryInteractDoor(3.5);
     const nearPickup = this.interact.tryPickup(2.0);
-    const showPrompt = nearDoor !== null || nearPickup !== null;
+    const nearFuseBox = this.isNearFuseBox(2.5);
+    const showPrompt =
+      nearDoor !== null || nearPickup !== null || nearFuseBox;
     if (this.ui.interactPrompt) {
       this.ui.interactPrompt.classList.toggle("hidden", !showPrompt);
     }
@@ -582,6 +601,10 @@ export class Game {
     if (this.ui.interactText) {
       if (nearPickup) {
         this.ui.interactText.textContent = "Recoger";
+      } else if (nearFuseBox) {
+        this.ui.interactText.textContent = this.puzzleSolved
+          ? "Energía OK"
+          : "Usar fusible";
       } else if (nearDoor) {
         this.ui.interactText.textContent = nearDoor.isOpen ? "Cerrar" : "Abrir";
       }
@@ -603,17 +626,34 @@ export class Game {
             break;
           case "objective":
             this.inventory.pickupObjective();
+            if (picked.cfg.keyName === "Fuse") this.hasFuse = true;
             break;
         }
         this.interact.removePickup(picked, this.scene);
+      } else if (this.isNearFuseBox(2.5)) {
+        // Interacción con el cuadro de fusibles
+        if (this.puzzleSolved) {
+          // Ya resuelto, no hacer nada
+        } else if (!this.hasFuse) {
+          this.showMessage("Hace falta un fusible");
+        } else {
+          this.puzzleSolved = true;
+          this.hasFuse = false;
+          this.showMessage("Puerta abierta");
+        }
       } else {
         const door = this.interact.tryInteractDoor(3.5);
         if (door) {
-          if (!door.requiresKey || this.inventory.hasKey(door.requiresKey)) {
+          const isSpecial = door === this.specialDoor;
+          const hasKey =
+            !door.requiresKey || this.inventory.hasKey(door.requiresKey);
+          if (hasKey && (!isSpecial || this.puzzleSolved)) {
             door.toggle();
             this.playDoorSound(door);
             // Check if this is the special door for zone transition
             this.checkZoneTransition(door);
+          } else if (isSpecial && hasKey && !this.puzzleSolved) {
+            this.showMessage("La puerta no tiene energía");
           } else {
             this.showLockedMessage(door.requiresKey!);
           }
@@ -659,6 +699,8 @@ export class Game {
     if (caught && this.hitGraceTimer <= 0) {
       this.playerHP--;
       this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
+      // El enemy se queda quieto 2s para dar oportunidad de huir
+      this.enemySystem.stun(2);
       console.log(
         `[HIT] HP: ${this.playerHP}/${GAME.PLAYER.HP} | speedPenalty: ${this.playerSpeedPenalty} → ${this.playerHP === 2 ? 0.1 : this.playerHP === 1 ? 0.15 : "DEAD"}`,
       );
@@ -753,13 +795,25 @@ export class Game {
   private lockedMsgTimer = 0;
 
   private showLockedMessage(keyName: string) {
+    this.showMessage(`Hace falta ${keyName}`);
+  }
+
+  private showMessage(text: string) {
     if (!this.ui.lockedMessage) return;
-    this.ui.lockedMessage.textContent = `Hace falta ${keyName}`;
+    this.ui.lockedMessage.textContent = text;
     this.ui.lockedMessage.classList.remove("hidden");
     clearTimeout(this.lockedMsgTimer);
     this.lockedMsgTimer = window.setTimeout(() => {
       this.ui.lockedMessage?.classList.add("hidden");
     }, 2500);
+  }
+
+  /** ¿El player está lo bastante cerca del fuse_box para interactuar? */
+  private isNearFuseBox(maxDist: number): boolean {
+    if (!this.fuseBox) return false;
+    const dx = this.player.position.x - this.fuseBoxPos.x;
+    const dz = this.player.position.z - this.fuseBoxPos.z;
+    return Math.hypot(dx, dz) < maxDist;
   }
 
   // -------------------- zone transition --------------------

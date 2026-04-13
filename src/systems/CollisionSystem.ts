@@ -80,22 +80,28 @@ export class CollisionSystem {
   }
 
   private getFloorHeight(playerPos: THREE.Vector3): number {
-    let highestY = 0; // Altura base del nivel (0)
     const feetY = playerPos.y - this.playerHeight;
-    const stepOffset = 0.5; // La altura máxima de un escalón que puedes subir de golpe
+    return this.getFloorAt(playerPos.x, playerPos.z, feetY, this.playerRadius);
+  }
 
-    const r = this.playerRadius * 0.5; // Radio reducido para no "enganchar" bordes lejanos
+  /**
+   * Devuelve la altura de suelo bajo el punto (x, z) considerando los pies
+   * en `feetY`. Útil para el enemy (o cualquier esfera) para poder subir
+   * escaleras sin atravesar colliders.
+   */
+  getFloorAt(x: number, z: number, feetY: number, radius: number): number {
+    let highestY = 0;
+    const stepOffset = 0.5;
+    const r = radius * 0.5;
 
     for (const c of this.colliders) {
       const box = c.box;
-      // Si el jugador está sobre esta caja (X y Z)
       if (
-        playerPos.x + r >= box.min.x &&
-        playerPos.x - r <= box.max.x &&
-        playerPos.z + r >= box.min.z &&
-        playerPos.z - r <= box.max.z
+        x + r >= box.min.x &&
+        x - r <= box.max.x &&
+        z + r >= box.min.z &&
+        z - r <= box.max.z
       ) {
-        // Y la caja está por debajo de nuestros pies + el stepOffset
         if (box.max.y > highestY && box.max.y <= feetY + stepOffset) {
           highestY = box.max.y;
         }

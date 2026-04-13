@@ -59,6 +59,14 @@ export class EnemySystem {
   // Freeze break timer
   private freezeTimer = 0;
 
+  // Post-hit stun: el enemy se queda quieto N segundos tras golpear
+  private stunTimer = 0;
+
+  /** Congela al enemy durante `seconds` segundos (tras un golpe, etc.) */
+  stun(seconds: number) {
+    this.stunTimer = seconds;
+  }
+
   // Last known position + search state
   private lastKnownPos = new THREE.Vector3();
   private hasLastKnownPos = false;
@@ -118,7 +126,18 @@ export class EnemySystem {
       return false;
     }
 
-    const d = this.enemy.position.distanceTo(playerPos);
+    // Distancia horizontal (ignora diferencia de Y entre cabeza del player y pies del enemy)
+    const dxP = this.enemy.position.x - playerPos.x;
+    const dzP = this.enemy.position.z - playerPos.z;
+    const d = Math.hypot(dxP, dzP);
+
+    // Post-hit stun: el enemy se queda quieto
+    if (this.stunTimer > 0) {
+      this.stunTimer -= dt;
+      this.enemy.setAnimState("idle");
+      this.behaviorState = "IDLE";
+      return false;
+    }
 
     // Rango de detección dinámico: más lejos si el player corre
     const activeRange = input.playerRunning
@@ -197,8 +216,18 @@ export class EnemySystem {
       this.enemy.radius,
     );
 
-    const caught =
-      this.enemy.position.distanceTo(playerPos) < this.catchDistance;
+    // Ajustar Y al suelo — permite subir escaleras / rampas
+    const floorY = this.collision.getFloorAt(
+      this.enemy.position.x,
+      this.enemy.position.z,
+      this.enemy.position.y,
+      this.enemy.radius,
+    );
+    this.enemy.position.y = floorY;
+
+    const cdx = this.enemy.position.x - playerPos.x;
+    const cdz = this.enemy.position.z - playerPos.z;
+    const caught = Math.hypot(cdx, cdz) < this.catchDistance;
     if (caught) this.behaviorState = "ATTACK";
     return caught;
   }
