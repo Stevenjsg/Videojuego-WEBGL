@@ -95,6 +95,9 @@ export class Game {
   private hitGraceTimer: number = 0;
   private playerSpeedPenalty: number = 0; // 0.0 – 1.0 (fraction of speed lost)
 
+  // Overlay DOM para el flash rojo en cada hit
+  private hitFlashEl: HTMLDivElement | null = null;
+
   // Puzzle del fusible: necesario para abrir la puerta especial
   private fuseBox: THREE.Object3D | null = null;
   private fuseBoxPos = new THREE.Vector3();
@@ -134,6 +137,18 @@ export class Game {
 
     this.bindUI();
     this.bindResize();
+
+    // Crear overlay de flash rojo
+    this.hitFlashEl = document.createElement("div");
+    this.hitFlashEl.className = "hit-flash";
+    this.mount.appendChild(this.hitFlashEl);
+  }
+
+  private triggerHitFlash() {
+    if (!this.hitFlashEl) return;
+    this.hitFlashEl.classList.remove("active");
+    void this.hitFlashEl.offsetWidth; // forzar reflow para reiniciar la animación
+    this.hitFlashEl.classList.add("active");
   }
 
   async start() {
@@ -701,6 +716,8 @@ export class Game {
       this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
       // El enemy se queda quieto 2s para dar oportunidad de huir
       this.enemySystem.stun(2);
+      // Efecto visual rojo
+      this.triggerHitFlash();
       console.log(
         `[HIT] HP: ${this.playerHP}/${GAME.PLAYER.HP} | speedPenalty: ${this.playerSpeedPenalty} → ${this.playerHP === 2 ? 0.1 : this.playerHP === 1 ? 0.15 : "DEAD"}`,
       );

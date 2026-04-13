@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(pnpm build:*)"
+      "Bash(pnpm build:*)",
+      "Bash(ls src/ui)",
+      "Bash(find . -name \"index.html\" -not -path \"*/node_modules/*\" -not -path \"*/dist/*\")",
+      "Bash(ls src/styles)",
+      "Bash(find . -name \"*.css\" -not -path \"*/node_modules/*\" -not -path \"*/dist/*\")"
     ]
   }
 }

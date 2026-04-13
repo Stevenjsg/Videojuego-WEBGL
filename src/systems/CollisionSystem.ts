@@ -91,7 +91,7 @@ export class CollisionSystem {
    */
   getFloorAt(x: number, z: number, feetY: number, radius: number): number {
     let highestY = 0;
-    const stepOffset = 0.5;
+    const stepOffset = 1.1;
     const r = radius * 0.5;
 
     for (const c of this.colliders) {
@@ -281,7 +281,7 @@ export class CollisionSystem {
   ) {
     const r2 = radius * radius;
     this.tmpCenter.copy(pos);
-    const stepOffset = 0.5;
+    const stepOffset = 1.1;
 
     for (const c of this.colliders) {
       if (this.ignoreFloors && this.isFloorLike(c)) continue;
