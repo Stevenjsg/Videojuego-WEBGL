@@ -568,7 +568,7 @@ export class Game {
 
   private initSpawn(spawn: THREE.Vector3) {
     this.player.position.copy(spawn);
-    this.controls.object.rotation.y = Math.PI / 2;
+    this.controls.object.rotation.y = Math.PI / 2 + Math.PI;
   }
 
   private initUI() {

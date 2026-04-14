@@ -56,8 +56,9 @@ export class EnemySystem {
   private detectionRange: number;
   private detectionRangeRunning: number;
 
-  // Freeze break timer
+  // Freeze break timer + flag de "slow walk" tras romper el freeze
   private freezeTimer = 0;
+  private slowAfterBreak = false;
 
   // Post-hit stun: el enemy se queda quieto N segundos tras golpear
   private stunTimer = 0;
@@ -126,10 +127,17 @@ export class EnemySystem {
       return false;
     }
 
-    // Distancia horizontal (ignora diferencia de Y entre cabeza del player y pies del enemy)
+    // Distancia horizontal (ignora la diferencia de Y intrínseca entre cabeza
+    // del player y pies del enemy)
     const dxP = this.enemy.position.x - playerPos.x;
     const dzP = this.enemy.position.z - playerPos.z;
     const d = Math.hypot(dxP, dzP);
+
+    // Diferencia vertical: si el player está en otro piso, ni chase ni catch.
+    // Player a y≈1.8 (cabeza), enemy a y≈0.2 (pies) → ~1.6m de base.
+    // Un piso típico tiene 2.5m+, así que 2.5 separa bien mismo piso vs otro.
+    const dyP = Math.abs(this.enemy.position.y - playerPos.y);
+    const sameFloor = dyP < 2.5;
 
     // Post-hit stun: el enemy se queda quieto
     if (this.stunTimer > 0) {
@@ -158,16 +166,23 @@ export class EnemySystem {
     } else {
       los = false;
     }
+    // Freeze SOLO con la luz de la linterna encendida apuntando al enemy
     const wantsFreeze = input.flashlightOn && inFrustum && los;
 
     this.lastInFrustum = inFrustum;
     this.lastHasLOS = los;
 
-    // ── Freeze con break después de freezeBreakTime ──────────────────────────
+    // Freeze con break: tras `freezeBreakTime` segundos el enemy rompe el
+    // freeze y queda en modo "slow walk" hasta que lo vuelvas a congelar.
     let freeze: boolean;
     if (wantsFreeze) {
+      if (this.freezeTimer === 0) {
+        // Inicio de un nuevo ciclo de freeze → reset del slow-walk
+        this.slowAfterBreak = false;
+      }
       this.freezeTimer += dt;
       freeze = this.freezeTimer < this.freezeBreakTime;
+      if (!freeze) this.slowAfterBreak = true;
     } else {
       this.freezeTimer = 0;
       freeze = false;
@@ -181,8 +196,8 @@ export class EnemySystem {
       // Congelado por la linterna (aún no rompió el freeze)
       this.enemy.setAnimState("idle");
       this.behaviorState = "IDLE";
-    } else if (d <= activeRange) {
-      // Player dentro del rango → CHASE, guardar última posición conocida
+    } else if (d <= activeRange && sameFloor) {
+      // Player dentro del rango y mismo piso → CHASE
       this.lastKnownPos.copy(playerPos);
       this.hasLastKnownPos = true;
       this.searchTimer = this.searchDuration;
@@ -227,7 +242,8 @@ export class EnemySystem {
 
     const cdx = this.enemy.position.x - playerPos.x;
     const cdz = this.enemy.position.z - playerPos.z;
-    const caught = Math.hypot(cdx, cdz) < this.catchDistance;
+    const caught =
+      sameFloor && Math.hypot(cdx, cdz) < this.catchDistance;
     if (caught) this.behaviorState = "ATTACK";
     return caught;
   }
@@ -241,14 +257,19 @@ export class EnemySystem {
     input: EnemyAdvancedInput,
     speedMult: number = 1,
   ) {
-    let finalSpeed = this.speed * speedMult;
-
-    // Presión por objetivos recogidos
-    const ratio =
-      input.objectivesTotal > 0
-        ? input.objectivesCollected / input.objectivesTotal
-        : 0;
-    finalSpeed *= 1 + 0.5 * ratio;
+    let finalSpeed: number;
+    if (this.slowAfterBreak) {
+      // Tras romper el freeze: walk lento fijo, sin bonuses por objetivos
+      finalSpeed = 1.5 * speedMult;
+    } else {
+      finalSpeed = this.speed * speedMult;
+      // Presión por objetivos recogidos
+      const ratio =
+        input.objectivesTotal > 0
+          ? input.objectivesCollected / input.objectivesTotal
+          : 0;
+      finalSpeed *= 1 + 0.5 * ratio;
+    }
 
     this.tmpDir.copy(target).sub(this.enemy.position);
     this.tmpDir.y = 0;
@@ -267,23 +288,33 @@ export class EnemySystem {
 
   /**
    * Comprueba si el enemy está dentro del frustum de la cámara.
-   * Usa la esfera del enemy (radio + margen) para ser generoso en los bordes.
+   * Usa una esfera grande centrada en el torso para ser MUY generoso —
+   * así detecta "mirada" aunque el player esté mirando la cabeza o los pies.
    */
+  private _torsoPos = new THREE.Vector3();
   private isInFrustum(camera: THREE.Camera): boolean {
-    camera.updateWorldMatrix(true, false);
+    // Actualizar matrices de la cámara — IMPORTANTE: matrixWorldInverse
+    // sólo se recalcula dentro del render loop, así que lo forzamos aquí.
+    camera.updateMatrixWorld(true);
+    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+
     this.projMatrix.multiplyMatrices(
       (camera as THREE.PerspectiveCamera).projectionMatrix,
       camera.matrixWorldInverse,
     );
     this.frustum.setFromProjectionMatrix(this.projMatrix);
-    this.enemySphere.set(this.enemy.position, this.enemy.radius + 0.4);
+    this._torsoPos.copy(this.enemy.position).add(new THREE.Vector3(0, 0.9, 0));
+    this.enemySphere.set(this._torsoPos, this.enemy.radius + 1.2);
     return this.frustum.intersectsSphere(this.enemySphere);
   }
 
   /**
-   * Dispara un rayo desde la cámara al enemy.
-   * Si algo intercepta ANTES de llegar al enemy → LOS bloqueado → false.
+   * Dispara un rayo desde la cámara al torso del enemy.
+   * Si algo intercepta ANTES de llegar → LOS bloqueado → false.
    * Si no hay occluders → asume visión directa → true.
+   *
+   * Apuntamos al torso (no a los pies) para que el rayo vaya casi horizontal
+   * y no choque con el suelo o mobiliario cercano al pie del enemy.
    */
   private hasLineOfSight(
     camera: THREE.Camera,
@@ -292,16 +323,18 @@ export class EnemySystem {
     if (occluders.length === 0) return true;
 
     camera.getWorldPosition(this._camPos);
-    this._toEnemy.copy(this.enemy.position).sub(this._camPos);
+    // Torso del enemy: position (pies) + ~0.9m
+    this._torsoPos.copy(this.enemy.position).add(new THREE.Vector3(0, 0.9, 0));
+    this._toEnemy.copy(this._torsoPos).sub(this._camPos);
     const dist = this._toEnemy.length();
     if (dist < 0.1) return true;
 
-    // Normalizar in-place sin crear nuevo vector
     this._toEnemy.multiplyScalar(1 / dist);
 
     this.raycaster.set(this._camPos, this._toEnemy);
-    // Parar un poco antes del enemy para no impactar su propio mesh
-    this.raycaster.far = dist - 0.35;
+    // Parar antes de llegar al enemy para no impactar su propio mesh.
+    // Usamos radius*2 + margen para cubrir todo el cuerpo del enemy.
+    this.raycaster.far = Math.max(0.01, dist - (this.enemy.radius * 2 + 0.2));
 
     const hits = this.raycaster.intersectObjects(occluders, false);
     return hits.length === 0;
