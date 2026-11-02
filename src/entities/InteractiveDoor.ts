@@ -73,6 +73,13 @@ export class InteractiveDoor {
     }
   }
 
+  /** Centro de la puerta cerrada (mundo). */
+  getCenter(out: THREE.Vector3) {
+    return this.closedBox
+      ? this.closedBox.getCenter(out)
+      : out.copy(this.root.position);
+  }
+
   toggle() {
     this.isOpen = !this.isOpen;
 

@@ -133,6 +133,19 @@ export class Game {
   private pickups: Pickup[] = [];
   private doors: InteractiveDoor[] = [];
   private fluorescentLamps: FluorescentLamp[] = [];
+  /** Tiempo que el enemy lleva forcejeando con cada puerta cerrada. */
+  private enemyDoorTimers = new Map<InteractiveDoor, number>();
+  /** Colliders de Zona1 para (re)generar la navmesh. */
+  private navColliders: THREE.Box3[] = [];
+
+  // Balanceo de cámara al caminar
+  private headBob = true;
+  private bobPhase = 0;
+  private bobAmount = 0;
+
+  // Pasos del enemy (mismo sonido que el jugador, más grave)
+  private enemySteps: THREE.PositionalAudio | null = null;
+  private enemyPrevPos = new THREE.Vector3();
 
   // Esconderse bajo las mesas (COL_Mesa*)
   private hideSpots: THREE.Box3[] = [];
@@ -167,7 +180,12 @@ export class Game {
     private ui: GameUI,
   ) {
     this.pauseMenu = new PauseMenu(
-      { sensitivity: 1, volume: 1, retroResolution: GAME.PS1.ENABLED },
+      {
+        sensitivity: 1,
+        volume: 1,
+        retroResolution: GAME.PS1.ENABLED,
+        headBob: true,
+      },
       {
         onResume: () => this.resume(),
         onRestart: () => location.reload(),
@@ -265,6 +283,7 @@ export class Game {
 
   private applySettings(s: GameSettings) {
     this.controls?.setSensitivity(GAME.MOUSE_SENSITIVITY * s.sensitivity);
+    this.headBob = s.headBob;
     this.audioListener?.setMasterVolume(s.volume);
 
     const retro = GAME.PS1.ENABLED && s.retroResolution;
@@ -413,7 +432,8 @@ export class Game {
     await nextFrame();
     await nextFrame();
     // Desde los mismos colliders que la física (sin puertas: son dinámicas).
-    this.navMesh = await this.createNavMesh(zone1Colliders);
+    this.navColliders = zone1Colliders;
+    this.navMesh = await this.createNavMesh(this.navObstacles());
     this.enemySystem.setNavMesh(this.navMesh);
 
     // ── 4. Modelos de personajes y objetos ──
@@ -436,6 +456,27 @@ export class Game {
     ld.setTitle("Listo");
     await new Promise((r) => setTimeout(r, 200));
     ld.hide();
+  }
+
+  /**
+   * Colliders para la navmesh: los del mapa + las puertas cerradas con llave
+   * (las demás no, porque el enemy las abre). Si no, el enemy traza caminos a
+   * través de puertas que no puede abrir y se queda empujándolas.
+   */
+  private navObstacles(): THREE.Box3[] {
+    const locked = this.doors
+      .filter((d) => d.requiresKey && d.collider && !d.collider.isEmpty())
+      .map((d) => d.collider!.clone());
+    return this.navColliders.concat(locked);
+  }
+
+  /** Tras desbloquear una puerta: el enemy ya puede pasar por ella. */
+  private async rebuildNavMesh() {
+    const nav = await this.createNavMesh(this.navObstacles());
+    if (!nav) return;
+    this.navMesh?.dispose();
+    this.navMesh = nav;
+    this.enemySystem.setNavMesh(nav);
   }
 
   private async createNavMesh(colliders: THREE.Box3[]) {
@@ -719,6 +760,7 @@ export class Game {
       this.footstepsAudio!.setBuffer(buffer);
       this.footstepsAudio!.setLoop(true);
       this.footstepsAudio!.setVolume(0.35);
+      this.createEnemySteps(buffer);
     });
 
     this.music = new MusicDirector(this.audioListener, {
@@ -918,6 +960,80 @@ export class Game {
     sound.onEnded = () => this.scene.remove(sound);
   }
 
+  /**
+   * Los pasos del jugador, más lentos (= más graves) y con paso bajo para que
+   * suenen pesados. Posicionales: se oye por dónde viene.
+   */
+  private createEnemySteps(buffer: AudioBuffer) {
+    const cfg = GAME.ENEMY.FOOTSTEPS;
+    const steps = new THREE.PositionalAudio(this.audioListener!);
+    steps.setBuffer(buffer);
+    steps.setLoop(true);
+    steps.setVolume(cfg.VOLUME);
+    steps.setPlaybackRate(cfg.RATE);
+    steps.setDistanceModel("linear");
+    steps.setRefDistance(1.5);
+    steps.setMaxDistance(cfg.MAX_DISTANCE);
+
+    const lowpass = steps.context.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = cfg.LOWPASS_HZ;
+    lowpass.Q.value = 0.7;
+    steps.setFilter(lowpass);
+
+    steps.position.set(0, 0.2, 0);
+    this.enemy.root.add(steps);
+    this.enemySteps = steps;
+  }
+
+  /** Suenan mientras el enemy se desplaza; más rápidos si corre. */
+  private updateEnemySteps(dt: number) {
+    const steps = this.enemySteps;
+    if (!steps || dt <= 0) return;
+    const e = this.enemy.position;
+    const speed =
+      Math.hypot(e.x - this.enemyPrevPos.x, e.z - this.enemyPrevPos.z) / dt;
+    this.enemyPrevPos.copy(e);
+
+    const moving = speed > 0.3;
+    if (moving) {
+      // De paso lento a carrera, siempre más grave que los del jugador.
+      const k = THREE.MathUtils.clamp(speed / 3, 0.4, 1);
+      steps.setPlaybackRate(GAME.ENEMY.FOOTSTEPS.RATE * (0.8 + 0.4 * k));
+      if (!steps.isPlaying) {
+        steps.offset = Math.random() * (steps.buffer?.duration ?? 0);
+        steps.play();
+      }
+    } else if (steps.isPlaying) {
+      steps.stop();
+    }
+  }
+
+  /** Balanceo de cámara al caminar (head bob). */
+  private updateHeadBob(dt: number) {
+    const axes = this.controls.getAxes();
+    const walking =
+      this.headBob && !this.hiding && (axes.forward !== 0 || axes.strafe !== 0);
+    const running = this.controls.getSpeedMultiplier() > 1;
+    const bob = GAME.PLAYER.HEAD_BOB;
+
+    // Entra y sale suave para que no dé un salto al parar.
+    const target = walking ? (running ? bob.RUN_MULT : 1) : 0;
+    this.bobAmount += (target - this.bobAmount) * (1 - Math.exp(-8 * dt));
+    if (walking) {
+      const rate = bob.STEPS_PER_SEC * (running ? bob.RUN_MULT : 1);
+      this.bobPhase += dt * rate * Math.PI;
+    }
+
+    const a = bob.AMPLITUDE * this.bobAmount;
+    // Arriba/abajo en cada paso y un leve vaivén lateral cada dos.
+    this.camera.position.set(
+      Math.cos(this.bobPhase) * a * 0.6,
+      Math.abs(Math.sin(this.bobPhase)) * a - a * 0.5,
+      0,
+    );
+  }
+
   private updateFootsteps() {
     if (!this.footstepsAudio || !this.footstepsAudio.buffer) return;
 
@@ -999,6 +1115,9 @@ export class Game {
 
     if (caught && this.hitGraceTimer <= 0) this.applyEnemyHit();
     this.updateFear(dt);
+    this.updateEnemyDoors(dt);
+    this.updateEnemySteps(dt);
+    this.updateHeadBob(dt);
     this.music?.setZone(this.currentMusicZone());
     this.music?.update(dt, this.fear);
     this.updateRain();
@@ -1152,6 +1271,49 @@ export class Game {
     return inApartment ? "zona2" : "zona1";
   }
 
+  // ── El enemy abre puertas ────────────────────────────────────────────────
+
+  /**
+   * Si el enemy camina hacia una puerta cerrada sin llave, forcejea un
+   * momento y la abre. Las cerradas con llave (y la especial) le frenan.
+   */
+  private updateEnemyDoors(dt: number) {
+    const state = this.enemySystem.behaviorState;
+    const walking =
+      state === "CHASE" || state === "SEARCH" || state === "PATROL";
+    const e = this.enemy.position;
+    const fx = Math.sin(this.enemy.root.rotation.y);
+    const fz = Math.cos(this.enemy.root.rotation.y);
+    const c = new THREE.Vector3();
+
+    for (const door of this.doors) {
+      if (!walking || door.isOpen || door.requiresKey) {
+        this.enemyDoorTimers.delete(door);
+        continue;
+      }
+      door.getCenter(c);
+      const dx = c.x - e.x;
+      const dz = c.z - e.z;
+      const dist = Math.hypot(dx, dz);
+      const sameFloor = c.y - e.y > 0 && c.y - e.y < 3;
+      // Solo si la tiene delante (no al pasar junto a ella).
+      const ahead = dist > 0.01 && (dx * fx + dz * fz) / dist > 0.3;
+      if (dist > GAME.ENEMY.DOOR_REACH || !sameFloor || !ahead) {
+        this.enemyDoorTimers.delete(door);
+        continue;
+      }
+
+      const t = (this.enemyDoorTimers.get(door) ?? 0) + dt;
+      if (t < GAME.ENEMY.DOOR_OPEN_DELAY) {
+        this.enemyDoorTimers.set(door, t);
+        continue;
+      }
+      this.enemyDoorTimers.delete(door);
+      door.toggle();
+      this.playDoorSound(door);
+    }
+  }
+
   // ── Miedo ────────────────────────────────────────────────────────────────
 
   private updateFear(dt: number) {
@@ -1210,6 +1372,11 @@ export class Game {
     if (hasKey && (!isSpecial || this.puzzleSolved)) {
       door.toggle();
       this.playDoorSound(door);
+      // Abierta con su llave queda desbloqueada (también para el enemy).
+      if (!isSpecial && door.requiresKey) {
+        door.requiresKey = null;
+        this.rebuildNavMesh();
+      }
       return;
     }
     if (isSpecial && hasKey && !this.puzzleSolved) {

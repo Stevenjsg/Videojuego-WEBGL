@@ -37,6 +37,8 @@ export const GAME = {
   MOUSE_SENSITIVITY: 0.002,
 
   PLAYER: {
+    /** Balanceo de cámara al caminar: amplitud (m) y pasos por segundo. */
+    HEAD_BOB: { AMPLITUDE: 0.035, STEPS_PER_SEC: 1.9, RUN_MULT: 1.45 },
     HEIGHT: 1.8,
     RADIUS: 0.3,
     BASE_SPEED: 1.5,
@@ -57,8 +59,18 @@ export const GAME = {
     DETECTION_RANGE_RUNNING: 14,
     /** Segundos que el enemy busca en la última posición conocida */
     SEARCH_DURATION: 4,
-    /** Agente de la navmesh (ver NavMeshSystem). RADIUS = Enemy.radius */
-    NAV: { RADIUS: 0.45, HEIGHT: 1.8, MAX_CLIMB: 0.4 },
+    /** Pasos: velocidad de reproducción (<1 = más lentos y graves) y filtro. */
+    FOOTSTEPS: { RATE: 0.65, LOWPASS_HZ: 700, VOLUME: 0.9, MAX_DISTANCE: 18 },
+    /** Abre puertas sin llave a esta distancia (m)… */
+    DOOR_REACH: 1.4,
+    /** …tras forcejear este tiempo (s) con el pomo. */
+    DOOR_OPEN_DELAY: 0.6,
+    /**
+     * Agente de la navmesh (ver NavMeshSystem). RADIUS: algo mayor que el
+     * radio de colisión con el mundo (0.45 × 0.75 = 0.34, EnemySystem) para no
+     * rozar paredes, pero pequeño para no cerrar los huecos de puerta de 1 m.
+     */
+    NAV: { RADIUS: 0.38, HEIGHT: 1.8, MAX_CLIMB: 0.4 },
   },
 
   LEVEL1: {
