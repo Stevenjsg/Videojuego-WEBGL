@@ -23,9 +23,12 @@ export type GameUI = {
 
   // Locked door message
   lockedMessage?: HTMLElement;
+
+  // Pantalla "Iniciar partida" (pulsa para empezar)
+  startScreen?: HTMLElement;
 };
 
-export type GameState = "LOADING" | "PLAYING" | "GAME_OVER";
+export type GameState = "LOADING" | "READY" | "PLAYING" | "GAME_OVER";
 
 export type Axes = { forward: number; strafe: number };
 

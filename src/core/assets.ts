@@ -1,36 +1,40 @@
 import * as THREE from "three";
 
+/**
+ * Manager compartido por los modelos que se cargan "por su cuenta" (enemy,
+ * linterna, pickups, HDRI). La pantalla de carga la controla Game; aquí solo
+ * se expone cuándo han terminado.
+ */
 export const loadingManager = new THREE.LoadingManager();
 
-export function bindLoadingUI() {
-  const root = document.getElementById("loading");
-  const fill = document.getElementById(
-    "loading-bar-fill",
-  ) as HTMLDivElement | null;
-  const text = document.getElementById("loading-text") as HTMLDivElement | null;
+let inFlight = false;
+let onProgress: ((ratio: number) => void) | null = null;
+const waiters: Array<() => void> = [];
 
-  if (!root || !fill || !text) return;
+loadingManager.onStart = () => {
+  inFlight = true;
+};
 
-  loadingManager.onStart = () => {
-    root.classList.remove("hidden");
-    fill.style.width = "0%";
-    text.textContent = "0%";
-  };
+loadingManager.onProgress = (_url, loaded, total) => {
+  inFlight = loaded < total;
+  onProgress?.(total > 0 ? loaded / total : 1);
+};
 
-  loadingManager.onProgress = (_url, loaded, total) => {
-    const p = total > 0 ? Math.round((loaded / total) * 100) : 0;
-    fill.style.width = `${p}%`;
-    text.textContent = `${p}%`;
-  };
+loadingManager.onLoad = () => {
+  inFlight = false;
+  onProgress = null;
+  waiters.splice(0).forEach((resolve) => resolve());
+};
 
-  loadingManager.onLoad = () => {
-    fill.style.width = "100%";
-    text.textContent = "100%";
-    // pequeño delay para que no parpadee
-    setTimeout(() => root.classList.add("hidden"), 200);
-  };
+loadingManager.onError = (url) => {
+  console.error(`Error cargando: ${url}`);
+};
 
-  loadingManager.onError = (url) => {
-    text.textContent = `Error cargando: ${url}`;
-  };
+/** Resuelve cuando no queda nada pendiente en `loadingManager`. */
+export function whenAssetsLoaded(
+  progress?: (ratio: number) => void,
+): Promise<void> {
+  if (!inFlight) return Promise.resolve();
+  onProgress = progress ?? null;
+  return new Promise((resolve) => waiters.push(resolve));
 }

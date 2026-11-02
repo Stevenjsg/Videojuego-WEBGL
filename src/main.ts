@@ -18,7 +18,11 @@ const ui = {
   batteryBarFill: document.getElementById("battery-bar-fill") ?? undefined,
   batteryText: document.getElementById("battery-text") ?? undefined,
   lockedMessage: document.getElementById("locked-message") ?? undefined,
+  startScreen: document.getElementById("start-screen") ?? undefined,
 };
 
 const game = new Game(mount, ui);
 game.start();
+
+// Acceso desde la consola del navegador solo en desarrollo (pnpm dev).
+if (import.meta.env.DEV) (window as any).game = game;

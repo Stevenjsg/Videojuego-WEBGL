@@ -4,6 +4,22 @@ import { ChunkedLevel, type ChunkedLevelOptions } from "./ChunkedLevel";
 // Definimos interfaces para mantener el TypeScript estricto y ordenado
 export type LightType = "hall" | "fluorescent" | "unknown";
 
+/**
+ * Luces prácticas del mapa (lámparas reales de la escena). Con caída física
+ * (decay 2) la intensidad en candelas tiene que ser alta para llegar al
+ * suelo: las del hall están a ~5 m de altura.
+ */
+const PRACTICAL_LIGHTS: Record<
+  LightType,
+  { color: number; intensity: number; distance: number }
+> = {
+  // Lámpara de araña del hall: charco de luz cálido, rincones a oscuras.
+  hall: { color: 0xffc98a, intensity: 16, distance: 11 },
+  // Fluorescente del ascensor: fría y más tenue.
+  fluorescent: { color: 0xd6e4ff, intensity: 6, distance: 8 },
+  unknown: { color: 0xffaa55, intensity: 8, distance: 10 },
+};
+
 export interface LevelSpawns {
   player: THREE.Object3D | null;
   enemy: THREE.Object3D | null;
@@ -102,33 +118,25 @@ export async function loadZone1(
       const nameLower = node.name.toLowerCase();
       let lightType: LightType = "unknown";
 
-      if (nameLower.includes("hall")) {
-        lightType = "hall";
-        // Hall: warm strong light
-        const light = new THREE.PointLight(0xffcc77, 5.0, 16);
-        light.position.copy(node.position);
-        light.castShadow = false;
-        scene.add(light);
-        node.userData.lightReference = light;
-      } else if (
+      if (nameLower.includes("hall")) lightType = "hall";
+      else if (
         nameLower.includes("florescente") ||
         nameLower.includes("fluorescente")
       ) {
         lightType = "fluorescent";
-        // Fluorescent: dim cold light (+25%)
-        const light = new THREE.PointLight(0xccddff, 0.75, 7);
-        light.position.copy(node.position);
-        light.castShadow = false;
-        scene.add(light);
-        node.userData.lightReference = light;
-      } else {
-        // Default fallback
-        const light = new THREE.PointLight(0xffaa55, 1, 8);
-        light.position.copy(node.position);
-        light.castShadow = false;
-        scene.add(light);
-        node.userData.lightReference = light;
       }
+
+      const cfg = PRACTICAL_LIGHTS[lightType];
+      const light = new THREE.PointLight(
+        cfg.color,
+        cfg.intensity,
+        cfg.distance,
+        2, // caída física: es lo que hace que se vean "reales"
+      );
+      light.position.copy(node.position);
+      light.castShadow = false;
+      scene.add(light);
+      node.userData.lightReference = light;
 
       spawns.lights.push({ node, lightType });
     }

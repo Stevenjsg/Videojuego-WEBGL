@@ -401,3 +401,67 @@ body {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.7);
 }
+
+/* Pantalla de inicio: título centrado, escena oscurecida detrás */
+#start-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.85) 70%,
+    rgba(0, 0, 0, 0.95) 100%
+  );
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#start-screen.hidden {
+  display: none;
+}
+
+#start-title {
+  padding: 0 16px;
+  text-align: center;
+  font-size: clamp(32px, 7vw, 72px);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(235, 225, 225, 0.95);
+  text-shadow:
+    0 0 24px rgba(160, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.9);
+}
+
+#start-hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12vh;
+  text-align: center;
+  font-size: clamp(14px, 2.4vw, 18px);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.75);
+  animation: start-hint-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes start-hint-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #start-hint {
+    animation: none;
+  }
+}

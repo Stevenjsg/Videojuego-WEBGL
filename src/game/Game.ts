@@ -23,6 +23,8 @@ import { InventorySystem } from "@systems/InventorySystem";
 import { LEVEL1_SPAWN } from "@world/levelData";
 import { InteractiveDoor } from "@entities/InteractiveDoor";
 import { ZoneManager } from "@systems/ZoneManager";
+import { NavMeshSystem } from "@systems/NavMeshSystem";
+import { installVertexSnapping } from "@systems/PS1Effect";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
@@ -30,7 +32,7 @@ import type { PickupType } from "@entities/Pickup";
 import type { GameUI, GameState } from "./types";
 import { GAME } from "./constants";
 import { hideOverlay, setGameOverUI } from "./state";
-import { bindLoadingUI } from "@/core/assets";
+import { whenAssetsLoaded } from "@/core/assets";
 
 /** Mapeo de items de Zone1 a configuración de pickup. */
 const ZONE1_ITEM_MAP: Record<
@@ -112,6 +114,7 @@ export class Game {
   private doors: InteractiveDoor[] = [];
   private interact!: InteractSystem;
   private zoneManager!: ZoneManager;
+  private navMesh: NavMeshSystem | null = null;
 
   /** Meshes del nivel usados para el raycast de línea de visión del enemy */
   private levelMeshes: THREE.Object3D[] = [];
@@ -133,8 +136,17 @@ export class Game {
     private ui: GameUI,
   ) {
     this.renderer = this.createAndConfigureRenderer();
-    this.scene = createScene();
-    this.camera = createCamera(this.mount);
+    const light = GAME.LIGHTING;
+    this.scene = createScene({
+      skyColor: light.SKY_COLOR,
+      groundColor: light.GROUND_COLOR,
+      ambientIntensity: light.AMBIENT_INTENSITY,
+      fogColor: light.FOG_COLOR,
+      fogNear: light.FOG_NEAR,
+      fogFar: GAME.VIEW_DISTANCE,
+    });
+    // Un poco más que la niebla para que nada se recorte antes de ser opaco.
+    this.camera = createCamera(this.mount, GAME.VIEW_DISTANCE + 1);
 
     this.debugger = new Debugger({
       debugEl:
@@ -156,10 +168,31 @@ export class Game {
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   async start() {
-    bindLoadingUI();
     await this.initWorld();
-    this.state = "PLAYING";
+    // El mundo ya se renderiza detrás de la pantalla de inicio, pero sin
+    // update(): ni el jugador ni el enemy se mueven hasta pulsar.
+    this.state = "READY";
     this.loop();
+    await this.waitForStartScreen();
+    this.state = "PLAYING";
+  }
+
+  private waitForStartScreen() {
+    const screen = this.ui.startScreen;
+    if (!screen) return Promise.resolve();
+    screen.classList.remove("hidden");
+    return new Promise<void>((resolve) => {
+      screen.addEventListener(
+        "click",
+        () => {
+          screen.classList.add("hidden");
+          // El click es el gesto de usuario que permite capturar el ratón.
+          this.controls.lock();
+          resolve();
+        },
+        { once: true },
+      );
+    });
   }
 
   dispose() {
@@ -179,9 +212,23 @@ export class Game {
     const r = createRenderer(this.mount);
     r.outputColorSpace = THREE.SRGBColorSpace;
     r.toneMapping = THREE.ACESFilmicToneMapping;
-    r.toneMappingExposure = 0.6;
-    r.setPixelRatio(Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP));
+    r.toneMappingExposure = GAME.LIGHTING.EXPOSURE;
+    if (GAME.PS1.ENABLED) {
+      // Antes de compilar ningún material.
+      installVertexSnapping(GAME.PS1.SNAP_GRID);
+      // Escalar el canvas de baja resolución sin suavizar.
+      r.domElement.style.imageRendering = "pixelated";
+    }
+    r.setPixelRatio(this.getPixelRatio());
     return r;
+  }
+
+  /** En modo PS1, el ratio que deja el render a GAME.PS1.HEIGHT px de alto. */
+  private getPixelRatio() {
+    if (GAME.PS1.ENABLED) {
+      return GAME.PS1.HEIGHT / Math.max(1, this.mount.clientHeight);
+    }
+    return Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP);
   }
 
   private bindUI() {
@@ -196,9 +243,13 @@ export class Game {
   private async initWorld() {
     const ld = this.queryLoadingDom();
     ld.show();
-    ld.setStage("Preparando…");
-    ld.setTitle("Preparando…");
-    ld.setProgress(0);
+
+    /** Cada etapa ocupa un tramo [from, to] de la barra. */
+    const stage = (title: string, from: number, to: number) => {
+      ld.setTitle(title);
+      ld.setProgress(from);
+      return (p: number) => ld.setProgress(from + (to - from) * p);
+    };
 
     this.initControls();
     this.initPostFX();
@@ -206,10 +257,8 @@ export class Game {
 
     this.registerApartmentZone();
 
-    // ── Zone 1 (mapa base) ──
-    ld.setStage("Cargando zona 1…");
-    ld.setTitle("Cargando zona 1…");
-    // Solo el core (colliders + spawns); lo visual llega por chunks.
+    // ── 1. Mapa: core (colliders + spawns), chunks visibles y puertas ──
+    let progress = stage("Cargando mapa…", 0, 0.55);
     const zone1 = await loadZone1(this.scene, GAME.LEVEL1_ZONE1.URL, {
       renderer: this.renderer,
       position: GAME.LEVEL1_ZONE1.POS,
@@ -218,6 +267,7 @@ export class Game {
         this.collectLOSMeshesFrom(chunk);
       },
     });
+    progress(0.1);
     const zone1Colliders = setupLevelMeshes(zone1.map);
     this.zone1Data = {
       map: zone1.map,
@@ -229,8 +279,8 @@ export class Game {
     // apartamento que tarda en cargar. Recolectamos las visibles de zone1.
     this.collectLOSMeshesFrom(zone1.map);
 
-    // ── Chunks cercanos al spawn + puertas (en paralelo) ──
-    // El resto de chunks sigue cargando en segundo plano durante el juego.
+    // Todo lo que está dentro de la distancia de visión se carga antes de
+    // empezar, así no se ve aparecer el mapa. El resto llega en segundo plano.
     const spawn = this.computePlayerSpawn(zone1.spawns);
     const [doorRoot] = await Promise.all([
       downloadWithProgress(
@@ -238,8 +288,8 @@ export class Game {
       ).then((blob) => loadGLBFromBlob(blob)),
       zone1.level.stream({
         focus: () => this.player?.position ?? spawn,
-        gateRadius: GAME.LEVEL1_ZONE1.GATE_RADIUS,
-        onProgress: (p) => ld.setProgress(p),
+        gateRadius: GAME.VIEW_DISTANCE,
+        onProgress: (p) => progress(0.1 + 0.9 * p),
       }),
     ]);
     const doorColliders = this.spawnDoors(doorRoot, zone1.spawns.doors);
@@ -248,9 +298,8 @@ export class Game {
     // que la transición sea casi instantánea.
     zone1.level.complete.then(() => ChunkedLevel.prefetch(GAME.LEVEL1.URL));
 
-    // ── HDRI ──
-    ld.setStage("Cargando iluminación…");
-    ld.setTitle("Cargando iluminación…");
+    // ── 2. HDRI ──
+    stage("Cargando iluminación…", 0.55, 0.65);
     await this.initEnvironment();
 
     // Fuse_Box: guardar referencia y posición
@@ -259,8 +308,20 @@ export class Game {
       this.fuseBox.getWorldPosition(this.fuseBoxPos);
     }
 
-    // ── Entidades + colisiones ──
+    // Arranca la descarga de enemy, linterna y pickups (loadingManager).
     this.initEntities(zone1.spawns);
+
+    // ── 3. Navmesh (síncrona en WASM: dejar pintar el texto antes) ──
+    stage("Generando navegación…", 0.65, 0.7);
+    await nextFrame();
+    await nextFrame();
+    // Desde los mismos colliders que la física (sin puertas: son dinámicas).
+    this.navMesh = await this.createNavMesh(zone1Colliders);
+    this.enemySystem.setNavMesh(this.navMesh);
+
+    // ── 4. Modelos de personajes y objetos ──
+    progress = stage("Cargando personajes y objetos…", 0.7, 1);
+    await whenAssetsLoaded(progress);
 
     const baseColliders = zone1Colliders.concat(doorColliders);
     this.initCollisions(baseColliders);
@@ -270,17 +331,32 @@ export class Game {
       );
     };
 
-    // ── Audio ──
     this.initAudio(zone1.spawns);
-
-    // ── Spawn + UI ──
     this.initSpawn(spawn);
     this.initUI();
 
     ld.setProgress(1);
     ld.setTitle("Listo");
-    ld.setStage("Listo");
-    setTimeout(() => ld.hide(), 200);
+    await new Promise((r) => setTimeout(r, 200));
+    ld.hide();
+  }
+
+  private async createNavMesh(colliders: THREE.Box3[]) {
+    const t0 = performance.now();
+    try {
+      const nav = await NavMeshSystem.fromColliders(colliders, {
+        radius: GAME.ENEMY.NAV.RADIUS,
+        height: GAME.ENEMY.NAV.HEIGHT,
+        maxClimb: GAME.ENEMY.NAV.MAX_CLIMB,
+      });
+      console.log(
+        `[NavMesh] ${nav ? "lista" : "no disponible"} en ${Math.round(performance.now() - t0)} ms`,
+      );
+      return nav;
+    } catch (err) {
+      console.error("[NavMesh] Error, el enemy irá en línea recta:", err);
+      return null;
+    }
   }
 
   private queryLoadingDom() {
@@ -383,7 +459,9 @@ export class Game {
 
   private initControls() {
     this.controls = new ControlsSystem(this.camera, this.mount, this.input, {
-      canLock: () => this.ui.overlay.classList.contains("hidden"),
+      canLock: () =>
+        this.state === "PLAYING" &&
+        this.ui.overlay.classList.contains("hidden"),
       sensitivity: 0.002,
       maxMouseDelta: 60,
       ignoreMouseEvents: 2,
@@ -397,6 +475,7 @@ export class Game {
     this.postFX = new PostFXSystem(this.renderer, this.scene, this.camera, {
       grainIntensity: 0.4,
       grayscale: false,
+      ps1ColorBits: GAME.PS1.ENABLED ? GAME.PS1.COLOR_BITS : undefined,
     });
   }
 
@@ -451,10 +530,12 @@ export class Game {
     this.flashlight = new Flashlight(this.camera, {
       url: "/models/assets/flashlight.glb",
       angle: 0.45,
-      penumbra: 0.6,
-      intensity: 6,
-      decay: 1.2,
-      distance: 14,
+      penumbra: 0.5,
+      intensity: 50,
+      decay: 1.5,
+      distance: GAME.VIEW_DISTANCE,
+      spillIntensity: 0.12,
+      spillAngle: 1.0,
       batteryDrainPerSec: 0.01,
       modelScale: 0.15,
       muzzlePos: new THREE.Vector3(0.02, -0.03, -0.22),
@@ -941,6 +1022,10 @@ export class Game {
       this.collision.removeColliders(this.zone1Data.colliders);
       this.zone1Data = null;
 
+      this.enemySystem.setNavMesh(null);
+      this.navMesh?.dispose();
+      this.navMesh = null;
+
       // Vaciar las meshes de LOS de zone1 — el ZoneManager las repoblará
       // cuando termine de cargar la zona del apartamento.
       this.levelMeshes.length = 0;
@@ -965,9 +1050,14 @@ export class Game {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
 
+    const ratio = this.getPixelRatio();
+    this.renderer.setPixelRatio(ratio);
+    this.renderer.setSize(w, h, false);
+    this.postFX?.setPixelRatio(ratio);
     this.postFX?.setSize(w, h);
-    this.renderer.setPixelRatio(
-      Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP),
-    );
   };
+}
+
+function nextFrame() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 }

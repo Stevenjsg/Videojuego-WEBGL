@@ -1,5 +1,37 @@
+/**
+ * Distancia máxima de visión (m). La niebla es opaca a esta distancia y la
+ * cámara no dibuja más allá; los chunks dentro de ella se cargan antes de
+ * empezar, así no se ve aparecer el mapa.
+ */
+const VIEW_DISTANCE = 20;
+
 export const GAME = {
   PIXEL_RATIO_CAP: 1.5,
+  VIEW_DISTANCE,
+
+  /** Estética PlayStation 1 (ver systems/PS1Effect.ts). */
+  PS1: {
+    ENABLED: true,
+    /** Resolución vertical interna (px). */
+    HEIGHT: 240,
+    /** Bits por canal (5 = color de 15 bits como la PS1). */
+    COLOR_BITS: 5,
+    /** Rejilla de snapping de vértices (más bajo = más temblor). */
+    SNAP_GRID: 120,
+  },
+
+  LIGHTING: {
+    /** Exposición del tone mapping (ACES). */
+    EXPOSURE: 0.9,
+    /** Luz ambiental hemisférica: cielo frío arriba, suelo cálido abajo. */
+    SKY_COLOR: 0x8c94b4,
+    GROUND_COLOR: 0x2e2622,
+    /** Bajo a propósito: la oscuridad la rompen las lámparas y la linterna. */
+    AMBIENT_INTENSITY: 0.22,
+    FOG_COLOR: 0x08080c,
+    /** La niebla empieza aquí y es opaca en VIEW_DISTANCE. */
+    FOG_NEAR: 2,
+  },
 
   PLAYER: {
     HEIGHT: 1.8,
@@ -22,6 +54,8 @@ export const GAME = {
     DETECTION_RANGE_RUNNING: 14,
     /** Segundos que el enemy busca en la última posición conocida */
     SEARCH_DURATION: 4,
+    /** Agente de la navmesh (ver NavMeshSystem). RADIUS = Enemy.radius */
+    NAV: { RADIUS: 0.45, HEIGHT: 1.8, MAX_CLIMB: 0.4 },
   },
 
   LEVEL1: {
@@ -30,14 +64,12 @@ export const GAME = {
     DEBUG: false,
     POS: { x: -3.22, y: 0, z: 30.5 },
     /** Metros alrededor del jugador que deben estar cargados al entrar. */
-    GATE_RADIUS: 6,
+    GATE_RADIUS: VIEW_DISTANCE,
   },
   LEVEL1_ZONE1: {
     /** Generado con `pnpm chunk-maps` desde Zona1.glb */
     URL: "/models/Zona1/chunks/manifest.json",
     POS: { x: 0, y: 0, z: 0 },
-    /** Metros alrededor del spawn que deben estar cargados antes de jugar. */
-    GATE_RADIUS: 12,
     DEBUG: false,
   },
   UI: {

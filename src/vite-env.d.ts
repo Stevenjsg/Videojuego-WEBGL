@@ -6,6 +6,8 @@ interface ViteTypeOptions {
 
 interface ImportMetaEnv {
   readonly VITE_APP_TITLE: string;
+  /** true con `vite` (dev), false en build. */
+  readonly DEV: boolean;
   // more env variables...
 }
 

@@ -65,7 +65,9 @@ export class ControlsSystem {
   }
 
   lock() {
-    this.mount.requestPointerLock();
+    // En Chrome devuelve una promesa que falla si se pierde el foco a tiempo.
+    const result = this.mount.requestPointerLock() as unknown;
+    if (result instanceof Promise) result.catch(() => {});
   }
 
   unlock() {

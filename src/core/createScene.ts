@@ -1,14 +1,34 @@
 import * as THREE from "three";
 
-export function createScene() {
+export type SceneLighting = {
+  skyColor: THREE.ColorRepresentation;
+  groundColor: THREE.ColorRepresentation;
+  ambientIntensity: number;
+  fogColor: THREE.ColorRepresentation;
+  fogNear: number;
+  /** Distancia a la que la niebla es totalmente opaca. */
+  fogFar: number;
+};
+
+export function createScene(lighting: SceneLighting) {
   const scene = new THREE.Scene();
 
-  // Niebla exponencial densa — muy poca visibilidad, tinte rojo-oscuro
-  scene.fog = new THREE.FogExp2(0x0d0005, 0.09);
-  scene.background = new THREE.Color(0x000000);
+  // Niebla lineal: opaca justo en `fogFar` (= far de la cámara), así el
+  // recorte del plano lejano y la carga de chunks lejanos no se notan.
+  scene.fog = new THREE.Fog(
+    lighting.fogColor,
+    lighting.fogNear,
+    lighting.fogFar,
+  );
+  scene.background = new THREE.Color(lighting.fogColor);
 
-  // Luz ambiente casi nula con tinte sangriento — la linterna es la única fuente real
-  const ambient = new THREE.AmbientLight(0x050510, 0.5);
+  // Ambiente hemisférico: da volumen (techo/suelo distintos) sin anular la
+  // linterna como fuente principal.
+  const ambient = new THREE.HemisphereLight(
+    lighting.skyColor,
+    lighting.groundColor,
+    lighting.ambientIntensity,
+  );
   scene.add(ambient);
 
   // Luz puntual muy tenue en el techo — da una referencia espacial sin revelar nada
