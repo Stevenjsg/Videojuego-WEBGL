@@ -11,6 +11,10 @@ export type FlashlightConfig = {
   angle?: number;
   penumbra?: number;
   decay?: number;
+  /** Halo ancho alrededor del haz, como fracción de `intensity` (0 = sin halo). */
+  spillIntensity?: number;
+  /** Semiángulo del halo (rad). */
+  spillAngle?: number;
 
   // battery
   batteryDrainPerSec?: number;
@@ -33,6 +37,8 @@ export class Flashlight {
   public battery = 1.0; // 0..1
 
   public light: THREE.SpotLight;
+  /** Halo: ilumina suave lo que rodea al haz para que no sea un túnel negro. */
+  private spill: THREE.SpotLight;
 
   private drainPerSec: number;
   private model: THREE.Object3D | null = null;
@@ -43,6 +49,7 @@ export class Flashlight {
 
   // cache params
   private baseIntensity: number;
+  private spillRatio: number;
 
   constructor(
     private camera: THREE.Camera,
@@ -77,19 +84,32 @@ export class Flashlight {
       cfg.decay ?? 2, // Caída de luz realista
     );
 
-    // Configuración de Sombras
+    // Configuración de Sombras (solo el haz principal: el halo no proyecta)
     this.light.castShadow = true;
-    this.light.shadow.mapSize.set(512, 512);
-    this.light.shadow.camera.near = 0.5;
+    this.light.shadow.mapSize.set(1024, 1024);
+    this.light.shadow.camera.near = 0.1;
     this.light.shadow.camera.far = cfg.distance ?? 30.0;
 
     // 🦇 TERROR TWEAK: Bias para evitar el "acné de sombras" (rayitas negras en las paredes)
     this.light.shadow.bias = -0.0005;
+    this.light.shadow.normalBias = 0.02;
 
-    // Montaje: muzzle contiene la luz, root contiene el target
-    this.muzzle.add(this.light);
+    this.spillRatio = cfg.spillIntensity ?? 0.12;
+    this.spill = new THREE.SpotLight(
+      0xffe6cc,
+      this.baseIntensity * this.spillRatio,
+      cfg.distance ?? 30.0,
+      cfg.spillAngle ?? 1.0,
+      1.0, // borde totalmente difuminado
+      cfg.decay ?? 2,
+    );
+    this.spill.castShadow = false;
+
+    // Montaje: muzzle contiene las luces, root contiene el target
+    this.muzzle.add(this.light, this.spill);
     this.light.position.set(0, 0, 0);
     this.light.target = this.target;
+    this.spill.target = this.target;
 
     // Modelo GLB (cosmético)
     this.loadModel(cfg.url, cfg.modelScale ?? 0.1);
@@ -152,16 +172,23 @@ export class Flashlight {
     if (this.isOn && low) {
       const t = performance.now() * 0.02;
       // Multiplicamos por la nueva baseIntensity para que el parpadeo escale bien
-      this.light.intensity =
-        this.baseIntensity * (0.7 + 0.3 * Math.abs(Math.sin(t)));
+      this.setIntensity(
+        this.baseIntensity * (0.7 + 0.3 * Math.abs(Math.sin(t))),
+      );
     } else if (this.isOn) {
-      this.light.intensity = this.baseIntensity;
+      this.setIntensity(this.baseIntensity);
     }
+  }
+
+  private setIntensity(intensity: number) {
+    this.light.intensity = intensity;
+    this.spill.intensity = intensity * this.spillRatio;
   }
 
   private applyLightState() {
     const enabled = this.hasFlashlight && this.isOn && this.battery > 0;
     this.light.visible = enabled;
+    this.spill.visible = enabled;
   }
 
   private loadModel(url: string, scale: number) {
