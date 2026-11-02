@@ -41,7 +41,8 @@ const ZONES = [
     out: "public/models/Zona1/chunks",
     cellSize: 10,
     // El suelo de transición se consulta por nombre en Game.isPlayerOnTransitionFloor
-    core: [...CORE_BASE, /SM_Safe_Floor_4x4\.093/],
+    // y el tubo fluorescente se usa para colocar su luz (FluorescentLamp).
+    core: [...CORE_BASE, /SM_Safe_Floor_4x4\.093/, /Tube-Lamp/i],
     textureSize: 1024,
     simplifyError: 0.0001,
   },

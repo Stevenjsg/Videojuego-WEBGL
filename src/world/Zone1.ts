@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { ChunkedLevel, type ChunkedLevelOptions } from "./ChunkedLevel";
+import { FluorescentLamp } from "@entities/FluorescentLamp";
 
 // Definimos interfaces para mantener el TypeScript estricto y ordenado
 export type LightType = "hall" | "fluorescent" | "unknown";
@@ -15,7 +16,8 @@ const PRACTICAL_LIGHTS: Record<
 > = {
   // Lámpara de araña del hall: charco de luz cálido, rincones a oscuras.
   hall: { color: 0xffc98a, intensity: 16, distance: 11 },
-  // Fluorescente del ascensor: fría y más tenue.
+  // Fluorescente del ascensor (solo si no se encuentra el tubo: ver
+  // FluorescentLamp, que es lo normal).
   fluorescent: { color: 0xd6e4ff, intensity: 6, distance: 8 },
   unknown: { color: 0xffaa55, intensity: 8, distance: 10 },
 };
@@ -25,7 +27,12 @@ export interface LevelSpawns {
   enemy: THREE.Object3D | null;
   doors: Array<{ node: THREE.Object3D; requiresKey: string | null }>;
   items: Array<{ type: string; node: THREE.Object3D }>;
-  lights: Array<{ node: THREE.Object3D; lightType: LightType }>;
+  lights: Array<{
+    node: THREE.Object3D;
+    lightType: LightType;
+    /** Solo fluorescentes con tubo en el mapa: luz con parpadeo sincronizado. */
+    lamp?: FluorescentLamp;
+  }>;
   fuseBox: THREE.Object3D | null;
 }
 
@@ -126,6 +133,12 @@ export async function loadZone1(
         lightType = "fluorescent";
       }
 
+      // Los fluorescentes se resuelven al final, cuando conocemos los tubos.
+      if (lightType === "fluorescent") {
+        spawns.lights.push({ node, lightType });
+        return;
+      }
+
       const cfg = PRACTICAL_LIGHTS[lightType];
       const light = new THREE.PointLight(
         cfg.color,
@@ -142,5 +155,53 @@ export async function loadZone1(
     }
   });
 
+  attachFluorescentLamps(scene, core, spawns);
+
   return { map: level.root, spawns, level };
+}
+
+/**
+ * Cada Spawn_Luz_florescente usa el tubo (Tube-Lamp…Glass) más cercano para
+ * colocar una luz rectangular que sale de él. Sin tubo → luz puntual.
+ */
+function attachFluorescentLamps(
+  scene: THREE.Scene,
+  core: THREE.Object3D,
+  spawns: LevelSpawns,
+) {
+  const tubes: THREE.Mesh[] = [];
+  core.traverse((o) => {
+    if ((o as THREE.Mesh).isMesh && /tube-lamp.*glass/i.test(o.name)) {
+      tubes.push(o as THREE.Mesh);
+    }
+  });
+
+  const spawnPos = new THREE.Vector3();
+  const tubePos = new THREE.Vector3();
+  for (const entry of spawns.lights) {
+    if (entry.lightType !== "fluorescent") continue;
+    entry.node.getWorldPosition(spawnPos);
+
+    let nearest: THREE.Mesh | null = null;
+    let best = 4; // metros: más lejos no es "su" tubo
+    for (const tube of tubes) {
+      const d = tube.getWorldPosition(tubePos).distanceTo(spawnPos);
+      if (d < best) {
+        best = d;
+        nearest = tube;
+      }
+    }
+
+    if (nearest) {
+      entry.lamp = new FluorescentLamp(scene, nearest);
+      entry.node.userData.lightReference = entry.lamp.light;
+      continue;
+    }
+
+    const cfg = PRACTICAL_LIGHTS.fluorescent;
+    const light = new THREE.PointLight(cfg.color, cfg.intensity, cfg.distance, 2);
+    light.position.copy(entry.node.position);
+    scene.add(light);
+    entry.node.userData.lightReference = light;
+  }
 }
