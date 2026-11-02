@@ -1,0 +1,81 @@
+{
+  "zona1": [
+    {
+      "url": "zona1/horrorland-01.mp3",
+      "duration": 35.5,
+      "intensity": 0.81
+    },
+    {
+      "url": "zona1/horrorland-02.mp3",
+      "duration": 32,
+      "intensity": 0.97
+    },
+    {
+      "url": "zona1/horrorland-03.mp3",
+      "duration": 28,
+      "intensity": 0.99
+    },
+    {
+      "url": "zona1/horrorland-04.mp3",
+      "duration": 38,
+      "intensity": 1
+    },
+    {
+      "url": "zona1/horrorland-05.mp3",
+      "duration": 30,
+      "intensity": 0
+    },
+    {
+      "url": "zona1/horrorland-06.mp3",
+      "duration": 29.5,
+      "intensity": 0.13
+    },
+    {
+      "url": "zona1/horrorland-07.mp3",
+      "duration": 24,
+      "intensity": 0.37
+    },
+    {
+      "url": "zona1/horrorland-08.mp3",
+      "duration": 27.5,
+      "intensity": 0.85
+    }
+  ],
+  "zona2": [
+    {
+      "url": "zona2/house-of-leaves-01.mp3",
+      "duration": 30,
+      "intensity": 0.33
+    },
+    {
+      "url": "zona2/house-of-leaves-02.mp3",
+      "duration": 26,
+      "intensity": 0.71
+    },
+    {
+      "url": "zona2/house-of-leaves-03.mp3",
+      "duration": 25,
+      "intensity": 0.51
+    },
+    {
+      "url": "zona2/house-of-leaves-04.mp3",
+      "duration": 24.5,
+      "intensity": 0.84
+    },
+    {
+      "url": "zona2/house-of-leaves-05.mp3",
+      "duration": 37.5,
+      "intensity": 1
+    },
+    {
+      "url": "zona2/house-of-leaves-06.mp3",
+      "duration": 27.5,
+      "intensity": 0
+    },
+    {
+      "url": "zona2/house-of-leaves-07.mp3",
+      "duration": 25.5,
+      "intensity": 0.44
+    }
+  ]
+}

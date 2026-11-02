@@ -203,6 +203,15 @@ export class ZoneManager {
     this.unloadZone(zone);
   }
 
+  /** Caja que envuelve los colliders de una zona cargada (o null). */
+  public getZoneBounds(id: string): THREE.Box3 | null {
+    const zone = this.zones.get(id);
+    if (!zone?.isLoaded || zone.colliders.length === 0) return null;
+    const box = new THREE.Box3();
+    for (const c of zone.colliders) box.union(c);
+    return box;
+  }
+
   public getAllDynamicColliders(): THREE.Box3[] {
     const list: THREE.Box3[] = [];
     for (const zone of this.zones.values()) {

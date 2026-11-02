@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "chunk-maps": "node scripts/chunk-maps.mjs",
-    "optimize-models": "node scripts/optimize-models.mjs"
+    "optimize-models": "node scripts/optimize-models.mjs",
+    "cut-music": "node scripts/cut-music.mjs"
   },
   "keywords": [],
   "author": "",
