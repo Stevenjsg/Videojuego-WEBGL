@@ -7,8 +7,6 @@ export type EnemySystemConfig = {
   speed: number;
   catchDistance: number;
   graceSeconds?: number;
-  /** Segundos máximos de freeze antes de romperlo */
-  freezeBreakTime?: number;
   /** Segundos que busca en la última posición conocida */
   searchDuration?: number;
   /** Rango de detección base */
@@ -26,6 +24,9 @@ export type EnemyAdvancedInput = {
 
   /** Si está apagada el enemy siempre se mueve sin restricciones */
   flashlightOn: boolean;
+
+  /** Foco de la linterna: el enemy se congela si está dentro de su cono. */
+  flashlightLight: THREE.SpotLight;
 
   /** Si el player está corriendo (Shift) */
   playerRunning: boolean;
@@ -52,19 +53,14 @@ export class EnemySystem {
   public behaviorState: EnemyBehaviorState = "IDLE";
 
   /** Estado de visibilidad del último frame — útil para el panel de debug. */
-  public lastInFrustum = false;
+  public lastInBeam = false;
   public lastHasLOS = false;
   public lastFrozen = false;
 
   // Config
-  private freezeBreakTime: number;
   private searchDuration: number;
   private detectionRange: number;
   private detectionRangeRunning: number;
-
-  // Freeze break timer + flag de "slow walk" tras romper el freeze
-  private freezeTimer = 0;
-  private slowAfterBreak = false;
 
   // Post-hit stun: el enemy se queda quieto N segundos tras golpear
   private stunTimer = 0;
@@ -74,10 +70,9 @@ export class EnemySystem {
   private hasLastKnownPos = false;
   private searchTimer = 0;
 
-  // Frustum
-  private frustum = new THREE.Frustum();
-  private projMatrix = new THREE.Matrix4();
-  private enemySphere = new THREE.Sphere();
+  // Cono de la linterna
+  private _lightPos = new THREE.Vector3();
+  private _lightDir = new THREE.Vector3();
 
   // LOS raycast (throttled: cada 3 frames)
   private raycaster = new THREE.Raycaster();
@@ -102,7 +97,6 @@ export class EnemySystem {
     this.speed = cfg.speed;
     this.catchDistance = cfg.catchDistance;
     this.grace = cfg.graceSeconds ?? 0;
-    this.freezeBreakTime = cfg.freezeBreakTime ?? 1.5;
     this.searchDuration = cfg.searchDuration ?? 4;
     this.detectionRange = cfg.detectionRange ?? 8;
     this.detectionRangeRunning = cfg.detectionRangeRunning ?? 14;
@@ -143,13 +137,15 @@ export class EnemySystem {
     const sameFloor =
       Math.abs(this.enemy.position.y - playerPos.y) < SAME_FLOOR_DY;
 
-    // Visibilidad y freeze por linterna
-    const inFrustum = this.isInFrustum(camera);
-    const los = inFrustum ? this.evaluateLOS(camera, input.occluderMeshes) : false;
-    this.lastInFrustum = inFrustum;
+    // Freeze: congelado mientras esté dentro del haz de la linterna y sin
+    // obstáculos entre medias. No hay tiempo límite.
+    const inBeam =
+      input.flashlightOn && this.isInBeam(input.flashlightLight);
+    const los = inBeam ? this.evaluateLOS(camera, input.occluderMeshes) : false;
+    this.lastInBeam = inBeam;
     this.lastHasLOS = los;
 
-    const freeze = this.updateFreeze(input.flashlightOn && inFrustum && los, dt);
+    const freeze = inBeam && los;
     this.lastFrozen = freeze;
 
     // Decidir movimiento
@@ -203,18 +199,12 @@ export class EnemySystem {
     input: EnemyAdvancedInput,
     speedMult: number = 1,
   ) {
-    let finalSpeed: number;
-    if (this.slowAfterBreak) {
-      // Tras romper el freeze: walk lento fijo, sin bonus por objetivos
-      finalSpeed = 1.5 * speedMult;
-    } else {
-      finalSpeed = this.speed * speedMult;
-      const ratio =
-        input.objectivesTotal > 0
-          ? input.objectivesCollected / input.objectivesTotal
-          : 0;
-      finalSpeed *= 1 + 0.5 * ratio;
-    }
+    let finalSpeed = this.speed * speedMult;
+    const ratio =
+      input.objectivesTotal > 0
+        ? input.objectivesCollected / input.objectivesTotal
+        : 0;
+    finalSpeed *= 1 + 0.5 * ratio;
 
     this.tmpDir.copy(target).sub(this.enemy.position);
     this.tmpDir.y = 0;
@@ -227,7 +217,7 @@ export class EnemySystem {
     this.tmpDir.normalize();
     this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
     this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
-    this.enemy.setAnimState("walk");
+    this.enemy.setMoveSpeed(finalSpeed);
   }
 
   private tickSearch(dt: number, input: EnemyAdvancedInput) {
@@ -242,39 +232,25 @@ export class EnemySystem {
     if (this.searchTimer <= 0) this.hasLastKnownPos = false;
   }
 
-  // ── Freeze por linterna ──────────────────────────────────────────────────
-
-  private updateFreeze(wantsFreeze: boolean, dt: number): boolean {
-    if (!wantsFreeze) {
-      this.freezeTimer = 0;
-      return false;
-    }
-    if (this.freezeTimer === 0) this.slowAfterBreak = false;
-    this.freezeTimer += dt;
-    const stillFrozen = this.freezeTimer < this.freezeBreakTime;
-    if (!stillFrozen) this.slowAfterBreak = true;
-    return stillFrozen;
-  }
-
   // ── Visibilidad ──────────────────────────────────────────────────────────
 
-  private isInFrustum(camera: THREE.Camera): boolean {
-    // Asegura que las matrices de la cámara están al día. Pasamos `false`
-    // porque la cámara no tiene jerarquía relevante por encima.
-    camera.updateMatrixWorld(false);
-    camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  /** ¿Está el torso del enemy dentro del cono y alcance de la linterna? */
+  private isInBeam(light: THREE.SpotLight): boolean {
+    light.getWorldPosition(this._lightPos);
+    light.target.getWorldPosition(this._lightDir);
+    this._lightDir.sub(this._lightPos).normalize();
 
-    this.projMatrix.multiplyMatrices(
-      (camera as THREE.PerspectiveCamera).projectionMatrix,
-      camera.matrixWorldInverse,
-    );
-    this.frustum.setFromProjectionMatrix(this.projMatrix);
+    this._torsoPos.copy(this.enemy.position).add(_TORSO_OFFSET);
+    this._toEnemy.copy(this._torsoPos).sub(this._lightPos);
+    const dist = this._toEnemy.length();
+    if (dist < 0.1) return true;
+    if (light.distance > 0 && dist > light.distance + this.enemy.radius) {
+      return false;
+    }
 
-    this._torsoPos
-      .copy(this.enemy.position)
-      .add(_TORSO_OFFSET);
-    this.enemySphere.set(this._torsoPos, this.enemy.radius + 1.2);
-    return this.frustum.intersectsSphere(this.enemySphere);
+    // El cono se "engorda" con el radio del enemy: basta con rozarlo.
+    const angularRadius = Math.atan(this.enemy.radius / dist);
+    return this._toEnemy.angleTo(this._lightDir) <= light.angle + angularRadius;
   }
 
   /** Throttled (1/3 frames) line-of-sight evaluation. */

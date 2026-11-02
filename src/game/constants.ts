@@ -22,8 +22,6 @@ export const GAME = {
     DETECTION_RANGE_RUNNING: 14,
     /** Segundos que el enemy busca en la última posición conocida */
     SEARCH_DURATION: 4,
-    /** Segundos de freeze máximo antes de romperlo */
-    FREEZE_BREAK_TIME: 1.5,
   },
 
   LEVEL1: {

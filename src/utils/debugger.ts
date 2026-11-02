@@ -12,7 +12,7 @@ export type DebugExtras = {
   enemyPos?: THREE.Vector3;
   enemyState?: string;
   enemyFrozen?: boolean;
-  enemyInFrustum?: boolean;
+  enemyInBeam?: boolean;
   enemyHasLOS?: boolean;
 };
 
@@ -100,7 +100,7 @@ export class Debugger {
     const enemyBlock = ep
       ? `  pos   ${v3(ep)}\n` +
         `  dist  <b>${dist!.toFixed(2)} m</b>   estado: ${stateTag(extras?.enemyState)}\n` +
-        `  frustum: ${on(extras?.enemyInFrustum)}   LOS: ${on(extras?.enemyHasLOS)}\n` +
+        `  haz: ${on(extras?.enemyInBeam)}   LOS: ${on(extras?.enemyHasLOS)}\n` +
         `  linterna: ${onOff(extras?.flashlightOn)}` +
         (bat != null ? ` <span class="dbg-dim">(${Math.round(bat * 100)}%)</span>` : "") +
         `   congelado: ${on(extras?.enemyFrozen)}\n`

@@ -2,12 +2,21 @@ import { loadingManager } from "@/core/assets";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
-type EnemyAnimState = "idle" | "walk";
+type EnemyAnimState = "idle" | "walk" | "run";
 
 export type EnemyConfig = {
   url: string;
   scale?: number;
 };
+
+/**
+ * Velocidad (m/s) a la que los pies no patinan con timeScale = 1.
+ * Los clips son "in place" (sin root motion), así que se ajustan a ojo.
+ */
+const WALK_ANIM_SPEED = 1.4;
+const RUN_ANIM_SPEED = 3.2;
+/** Por encima de esta velocidad se usa el clip de correr. */
+const RUN_THRESHOLD = 2.6;
 
 export class Enemy {
   public root = new THREE.Group();
@@ -38,6 +47,19 @@ export class Enemy {
 
   updateAnimation(dt: number) {
     if (this.mixer) this.mixer.update(dt);
+  }
+
+  /**
+   * Elige walk/run según la velocidad y ajusta el ritmo de la animación para
+   * que los pasos coincidan con el desplazamiento real.
+   */
+  setMoveSpeed(speed: number) {
+    const run = speed > RUN_THRESHOLD && this.actions.has("run");
+    this.setAnimState(run ? "run" : "walk");
+    const ref = run ? RUN_ANIM_SPEED : WALK_ANIM_SPEED;
+    this.current?.setEffectiveTimeScale(
+      THREE.MathUtils.clamp(speed / ref, 0.5, 1.8),
+    );
   }
 
   setAnimState(next: EnemyAnimState) {
@@ -97,9 +119,10 @@ export class Enemy {
 
           const idleClip = clips.find((c) => c.name === "Idle") ?? clips[0];
           const walkClip =
-            clips.find((c) => c.name === "Running") ??
             clips.find((c) => c.name === "Walking") ??
+            clips.find((c) => c.name === "Running") ??
             null;
+          const runClip = clips.find((c) => c.name === "Running") ?? null;
 
           const idle = this.mixer.clipAction(idleClip);
           idle.reset().enabled = true;
@@ -113,6 +136,14 @@ export class Enemy {
             walk.setEffectiveWeight(0);
             walk.play();
             this.actions.set("walk", walk);
+          }
+
+          if (runClip && runClip !== walkClip) {
+            const run = this.mixer.clipAction(runClip);
+            run.reset().enabled = true;
+            run.setEffectiveWeight(0);
+            run.play();
+            this.actions.set("run", run);
           }
 
           this.current = idle;

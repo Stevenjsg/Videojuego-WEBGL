@@ -433,7 +433,6 @@ export class Game {
     this.enemySystem = new EnemySystem(this.enemy, this.collision, {
       speed: GAME.ENEMY.SPEED,
       catchDistance: GAME.ENEMY.CATCH_DISTANCE,
-      freezeBreakTime: GAME.ENEMY.FREEZE_BREAK_TIME,
       searchDuration: GAME.ENEMY.SEARCH_DURATION,
       detectionRange: GAME.ENEMY.DETECTION_RANGE,
       detectionRangeRunning: GAME.ENEMY.DETECTION_RANGE_RUNNING,
@@ -700,6 +699,7 @@ export class Game {
       camera: this.camera,
       playerPos: this.player.position,
       flashlightOn: this.flashlight.isOn,
+      flashlightLight: this.flashlight.light,
       playerRunning: this.controls.getSpeedMultiplier() > 1,
       objectivesCollected: this.inventory.objectives,
       objectivesTotal: this.inventory.objectivesTotal,
@@ -714,7 +714,7 @@ export class Game {
       enemyPos: this.enemy.position,
       enemyState: this.enemySystem.behaviorState,
       enemyFrozen: this.enemySystem.lastFrozen,
-      enemyInFrustum: this.enemySystem.lastInFrustum,
+      enemyInBeam: this.enemySystem.lastInBeam,
       enemyHasLOS: this.enemySystem.lastHasLOS,
     });
 
