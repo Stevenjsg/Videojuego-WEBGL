@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 import { setupLevelMeshes } from "@world/Level1";
+import { ChunkedLevel } from "@world/ChunkedLevel";
 import { CollisionSystem } from "./CollisionSystem";
 
 export type ZoneConfig = {
@@ -11,32 +12,44 @@ export type ZoneConfig = {
   triggerBox: THREE.Box3; // Jugador dentro de esta caja => cargar. Fuera => descargar.
   onLoad?: (root: THREE.Object3D, colliders: THREE.Box3[]) => void;
   onUnload?: () => void;
+  /** Solo zonas por chunks (url = manifest.json): por cada chunk añadido. */
+  onChunk?: (chunk: THREE.Object3D) => void;
+  /** Solo zonas por chunks: metros alrededor del jugador antes de `onLoad`. */
+  gateRadius?: number;
   loadPromise?: Promise<void>;
+  /** Cargada con forceLoadZone: el trigger no la descarga automáticamente. */
+  forced?: boolean;
   isLoaded: boolean;
   rootObject: THREE.Object3D | null;
+  level: ChunkedLevel | null;
   colliders: THREE.Box3[];
 };
 
 export class ZoneManager {
   private zones = new Map<string, ZoneConfig>();
+  /** Última posición del jugador: prioriza qué chunk se descarga primero. */
+  private focus = new THREE.Vector3();
 
   constructor(
     private scene: THREE.Scene,
     private collisionSystem: CollisionSystem,
     private onZoneProgress: (ratio: number) => void,
-    private setStage: (msg: string) => void
+    private setStage: (msg: string) => void,
+    private renderer?: THREE.WebGLRenderer,
   ) {}
 
-  public addZone(config: Omit<ZoneConfig, "isLoaded" | "rootObject" | "colliders" | "loadPromise">) {
+  public addZone(config: Omit<ZoneConfig, "isLoaded" | "rootObject" | "level" | "colliders" | "loadPromise">) {
     this.zones.set(config.id, {
       ...config,
       isLoaded: false,
       rootObject: null,
+      level: null,
       colliders: [],
     });
   }
 
   public update(playerPos: THREE.Vector3) {
+    this.focus.copy(playerPos);
     for (const [id, zone] of this.zones.entries()) {
       const inTrigger = zone.triggerBox.containsPoint(playerPos);
 
@@ -45,7 +58,7 @@ export class ZoneManager {
         this.loadZone(zone);
       }
       // Si salimos del trigger y está cargada
-      else if (!inTrigger && zone.isLoaded && zone.rootObject && !zone.loadPromise) {
+      else if (!inTrigger && !zone.forced && zone.isLoaded && zone.rootObject && !zone.loadPromise) {
         this.unloadZone(zone);
       }
     }
@@ -56,6 +69,11 @@ export class ZoneManager {
     
     zone.loadPromise = (async () => {
       try {
+        if (zone.url.endsWith(".json")) {
+          await this.loadChunkedZone(zone);
+          return;
+        }
+
         const blob = await downloadWithProgress(zone.url, (p) => {
           if (p.ratio != null) this.onZoneProgress(p.ratio);
         });
@@ -88,9 +106,53 @@ export class ZoneManager {
     })();
   }
 
+  /** Core (colliders) primero, luego chunks por cercanía al jugador. */
+  private async loadChunkedZone(zone: ZoneConfig) {
+    const level = new ChunkedLevel({
+      manifestUrl: zone.url,
+      renderer: this.renderer,
+      onChunk: (chunk) => {
+        setupLevelMeshes(chunk);
+        zone.onChunk?.(chunk);
+      },
+    });
+    level.root.position.copy(zone.position);
+    this.scene.add(level.root);
+    zone.level = level;
+    zone.rootObject = level.root;
+
+    try {
+      const core = await level.loadCore();
+      zone.colliders = setupLevelMeshes(core);
+      zone.onChunk?.(core);
+    } catch (err) {
+      level.dispose();
+      zone.level = null;
+      zone.rootObject = null;
+      throw err;
+    }
+
+    zone.isLoaded = true;
+    this.refreshGlobalCollisions();
+
+    await level.stream({
+      focus: () => this.focus,
+      gateRadius: zone.gateRadius ?? 8,
+      onProgress: this.onZoneProgress,
+    });
+
+    if (level !== zone.level) return; // descargada mientras cargaba
+    if (zone.onLoad) zone.onLoad(level.root, zone.colliders);
+    console.log(`[ZoneManager] Finished loading zone: ${zone.id}`);
+  }
+
   private unloadZone(zone: ZoneConfig) {
     console.log(`[ZoneManager] Unloading zone: ${zone.id}`);
-    if (zone.rootObject) {
+    if (zone.level) {
+      zone.level.dispose();
+      zone.level = null;
+      zone.rootObject = null;
+    } else if (zone.rootObject) {
       this.scene.remove(zone.rootObject);
       
       // Limpiar geometría y materiales para liberar RAM/VRAM
@@ -123,14 +185,18 @@ export class ZoneManager {
   /** Force-load a zone regardless of trigger box position. */
   public forceLoadZone(id: string) {
     const zone = this.zones.get(id);
-    if (!zone || zone.isLoaded || zone.loadPromise) return;
+    if (!zone) return;
+    zone.forced = true;
+    if (zone.isLoaded || zone.loadPromise) return;
     this.loadZone(zone);
   }
 
   /** Force-unload a zone regardless of trigger box position. */
   public forceUnloadZone(id: string) {
     const zone = this.zones.get(id);
-    if (!zone || !zone.isLoaded || !zone.rootObject) return;
+    if (!zone) return;
+    zone.forced = false;
+    if (!zone.isLoaded || !zone.rootObject) return;
     this.unloadZone(zone);
   }
 

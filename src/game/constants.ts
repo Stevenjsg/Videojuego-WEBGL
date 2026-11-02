@@ -27,13 +27,19 @@ export const GAME = {
   },
 
   LEVEL1: {
-    URL: "/models/apartment/ModernApartment.glb",
+    /** Generado con `pnpm chunk-maps` desde ModernApartment.glb */
+    URL: "/models/apartment/chunks/manifest.json",
     DEBUG: false,
     POS: { x: -3.22, y: 0, z: 30.5 },
+    /** Metros alrededor del jugador que deben estar cargados al entrar. */
+    GATE_RADIUS: 6,
   },
   LEVEL1_ZONE1: {
-    URL: "/models/Zona1/Zona1.glb",
+    /** Generado con `pnpm chunk-maps` desde Zona1.glb */
+    URL: "/models/Zona1/chunks/manifest.json",
     POS: { x: 0, y: 0, z: 0 },
+    /** Metros alrededor del spawn que deben estar cargados antes de jugar. */
+    GATE_RADIUS: 12,
     DEBUG: false,
   },
   UI: {

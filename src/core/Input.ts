@@ -16,15 +16,16 @@ export class Input {
   isDown(code: string) {
     return this.keys.has(code);
   }
-  wasPressed(code: string) {
+
+  /** True el primer frame que la tecla pasa de up→down. */
+  justPressed(code: string) {
     return this.pressed.has(code);
   }
-  justPressed(code: string) {
-    return this.wasPressed(code);
-  }
+
   endFrame() {
     this.pressed.clear();
   }
+
   dispose() {
     window.removeEventListener("keydown", this.onDown);
     window.removeEventListener("keyup", this.onUp);

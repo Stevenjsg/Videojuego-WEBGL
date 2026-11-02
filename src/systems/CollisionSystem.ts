@@ -6,11 +6,6 @@ export type CollisionConfig = {
   playerRadius?: number;
   playerHeight?: number;
   useSlide?: boolean;
-  // filtros (tuneables)
-  ignoreFloors?: boolean;
-  maxVolume?: number;
-  giantFlatY?: number;
-  giantFlatXZ?: number;
 };
 
 export class CollisionSystem {
@@ -18,14 +13,9 @@ export class CollisionSystem {
   private playerHeight: number;
   private useSlide: boolean;
 
-  private ignoreFloors: boolean;
-  private maxVolume: number;
-  private giantFlatY: number;
-  private giantFlatXZ: number;
-
   private colliders: Collider[] = [];
 
-  // temporales (no basura por frame)
+  // Temporales reutilizables (cero allocations por frame)
   private tmpClosest = new THREE.Vector3();
   private tmpCenter = new THREE.Vector3();
   private tmpMove = new THREE.Vector3();
@@ -36,15 +26,6 @@ export class CollisionSystem {
     this.playerRadius = cfg?.playerRadius ?? 0.35;
     this.playerHeight = cfg?.playerHeight ?? 1.8;
     this.useSlide = cfg?.useSlide ?? true;
-
-    this.ignoreFloors = cfg?.ignoreFloors ?? true;
-    this.maxVolume = cfg?.maxVolume ?? 800;
-    this.giantFlatY = cfg?.giantFlatY ?? 0.25;
-    this.giantFlatXZ = cfg?.giantFlatXZ ?? 15;
-  }
-
-  clear() {
-    this.colliders = [];
   }
 
   setColliders(boxes: THREE.Box3[], namePrefix = "manual") {
@@ -56,32 +37,6 @@ export class CollisionSystem {
   removeColliders(boxes: THREE.Box3[]) {
     const toRemove = new Set(boxes);
     this.colliders = this.colliders.filter((c) => !toRemove.has(c.box));
-  }
-
-  buildFromObjects(objects: THREE.Object3D[]) {
-    this.colliders = [];
-    for (const obj of objects) {
-      // SOLO usamos los objetos que dibujamos en Blender para la física
-      if (obj.name.toLowerCase().startsWith("col_")) {
-        const c = this.objectToCollider(obj);
-        if (c) {
-          this.colliders.push(c);
-          obj.visible = false; // ¡Los hacemos invisibles aquí mismo!
-          console.log(
-            `[COLLISION] Collider "${c.name}" cargado con box:`,
-            c.box,
-          );
-        }
-      }
-    }
-    console.log(
-      `[COLLISION] Cargados ${this.colliders.length} colliders desde Blender.`,
-    );
-  }
-
-  private getFloorHeight(playerPos: THREE.Vector3): number {
-    const feetY = playerPos.y - this.playerHeight;
-    return this.getFloorAt(playerPos.x, playerPos.z, feetY, this.playerRadius);
   }
 
   /**
@@ -110,15 +65,15 @@ export class CollisionSystem {
     return highestY;
   }
 
-  resolvePlayer(playerPos: THREE.Vector3, prevPos: THREE.Vector3) {
-    const before = this.tmpTryX.copy(playerPos);
+  // ── Player ────────────────────────────────────────────────────────────────
 
+  resolvePlayer(playerPos: THREE.Vector3, prevPos: THREE.Vector3) {
     // 1. Detectar la altura del suelo/escalera actual
     const currentFloorY = this.getFloorHeight(prevPos);
 
-    // 2. Fijar la altura del jugador basada en el suelo (¡Adiós al Y estático!)
+    // 2. Fijar la altura del jugador basada en el suelo
     playerPos.y = currentFloorY + this.playerHeight;
-    const feetY = currentFloorY; // Dónde están los pies
+    const feetY = currentFloorY;
 
     if (!this.useSlide) {
       if (this.intersectsAny(playerPos, feetY)) playerPos.copy(prevPos);
@@ -126,9 +81,9 @@ export class CollisionSystem {
     }
 
     this.tmpMove.copy(playerPos).sub(prevPos);
-    this.tmpMove.y = 0; // Ignoramos el movimiento en Y para el deslizamiento
+    this.tmpMove.y = 0;
 
-    // Limitar velocidad máxima de la física (Mantiene el CCD estable)
+    // CCD: limita el paso máximo por frame
     const maxStep = 0.35;
     const len = this.tmpMove.length();
     if (len > maxStep) {
@@ -148,34 +103,47 @@ export class CollisionSystem {
     playerPos.copy(this.tmpTryZ);
   }
 
-  // ---------------- private ----------------
+  // ── Sphere (enemy / NPCs) ─────────────────────────────────────────────────
 
-  private objectToCollider(obj: THREE.Object3D): Collider | null {
-    obj.updateWorldMatrix(true, false);
-    const name = (obj.name || "").toLowerCase();
+  resolveSphere(pos: THREE.Vector3, prevPos: THREE.Vector3, radius: number) {
+    this.tmpMove.copy(pos).sub(prevPos);
 
-    // Mesh: boundingBox mundial (rápido)
-    if ((obj as any).isMesh) {
-      const mesh = obj as THREE.Mesh;
-      mesh.geometry.computeBoundingBox();
-      const bb = mesh.geometry.boundingBox;
-      if (!bb) return null;
-
-      const worldBB = bb.clone().applyMatrix4(mesh.matrixWorld);
-      if (worldBB.isEmpty()) return null;
-
-      return { name, box: worldBB };
+    // CCD: limita el paso máximo por frame
+    const maxStep = 0.25;
+    const len = this.tmpMove.length();
+    if (len > maxStep) {
+      this.tmpMove.multiplyScalar(maxStep / len);
+      pos.copy(prevPos).add(this.tmpMove);
     }
 
-    // Group/Object3D: AABB global
-    const box = new THREE.Box3().setFromObject(obj);
-    if (box.isEmpty()) return null;
+    const feetY = pos.y - radius;
 
-    return { name, box };
+    if (!this.intersectsSphere(pos, radius, feetY)) return;
+
+    // Slide X
+    this.tmpTryX.set(prevPos.x + this.tmpMove.x, pos.y, prevPos.z);
+    if (this.intersectsSphere(this.tmpTryX, radius, feetY))
+      this.tmpTryX.x = prevPos.x;
+
+    // Slide Z
+    this.tmpTryZ.set(this.tmpTryX.x, pos.y, prevPos.z + this.tmpMove.z);
+    if (this.intersectsSphere(this.tmpTryZ, radius, feetY))
+      this.tmpTryZ.z = prevPos.z;
+
+    pos.copy(this.tmpTryZ);
+
+    if (this.intersectsSphere(pos, radius, feetY)) pos.copy(prevPos);
+  }
+
+  // ── Helpers internos ──────────────────────────────────────────────────────
+
+  private getFloorHeight(playerPos: THREE.Vector3): number {
+    const feetY = playerPos.y - this.playerHeight;
+    return this.getFloorAt(playerPos.x, playerPos.z, feetY, this.playerRadius);
   }
 
   private intersectsAny(playerPos: THREE.Vector3, feetY: number) {
-    // Esfera central a media altura
+    // Esfera central a media altura del player
     this.tmpCenter.set(
       playerPos.x,
       playerPos.y - this.playerHeight * 0.5,
@@ -187,7 +155,7 @@ export class CollisionSystem {
     for (const c of this.colliders) {
       const box = c.box;
 
-      // ¡MAGIA! Ignorar cajas que actúan como suelo o escalón bajito
+      // Ignorar colliders bajo los pies (suelos / escalones bajitos)
       if (box.max.y <= feetY + stepOffset) continue;
 
       this.tmpClosest.set(
@@ -205,75 +173,6 @@ export class CollisionSystem {
     return false;
   }
 
-  private isFloorLike(c: Collider) {
-    const n = c.name;
-    return n.includes("floor") || n.includes("ground") || n.includes("terrain");
-  }
-
-  private isBadCollider(c: Collider) {
-    const n = c.name;
-    if (
-      n.includes("collision") ||
-      n.includes("collider") ||
-      n.includes("proxy") ||
-      n.includes("occlud")
-    ) {
-      return true;
-    }
-
-    const s = this.getSize(c.box);
-    const volume = s.x * s.y * s.z;
-
-    if (volume > this.maxVolume) return true;
-
-    // placas gigantes tipo "shell"
-    if (
-      s.y < this.giantFlatY &&
-      (s.x > this.giantFlatXZ || s.z > this.giantFlatXZ)
-    )
-      return true;
-
-    return false;
-  }
-
-  private getSize(box: THREE.Box3) {
-    // evita new Vector3
-    return {
-      x: box.max.x - box.min.x,
-      y: box.max.y - box.min.y,
-      z: box.max.z - box.min.z,
-    };
-  }
-
-  resolveSphere(pos: THREE.Vector3, prevPos: THREE.Vector3, radius: number) {
-    this.tmpMove.copy(pos).sub(prevPos);
-
-    // clamp para evitar penetración grande en un frame
-    const maxStep = 0.25; // ajusta 0.2-0.35
-    const len = this.tmpMove.length();
-    if (len > maxStep) {
-      this.tmpMove.multiplyScalar(maxStep / len);
-      pos.copy(prevPos).add(this.tmpMove);
-    }
-
-    // Altura de los pies de la esfera (para ignorar suelos)
-    const feetY = pos.y - radius;
-
-    if (!this.intersectsSphere(pos, radius, feetY)) return;
-
-    this.tmpTryX.set(prevPos.x + this.tmpMove.x, pos.y, prevPos.z);
-    if (this.intersectsSphere(this.tmpTryX, radius, feetY))
-      this.tmpTryX.x = prevPos.x;
-
-    this.tmpTryZ.set(this.tmpTryX.x, pos.y, prevPos.z + this.tmpMove.z);
-    if (this.intersectsSphere(this.tmpTryZ, radius, feetY))
-      this.tmpTryZ.z = prevPos.z;
-
-    pos.copy(this.tmpTryZ);
-
-    if (this.intersectsSphere(pos, radius, feetY)) pos.copy(prevPos);
-  }
-
   private intersectsSphere(
     pos: THREE.Vector3,
     radius: number,
@@ -284,12 +183,9 @@ export class CollisionSystem {
     const stepOffset = 1.1;
 
     for (const c of this.colliders) {
-      if (this.ignoreFloors && this.isFloorLike(c)) continue;
-      if (this.isBadCollider(c)) continue;
-
       const box = c.box;
 
-      // Ignorar colliders que actúan como suelo bajo los pies de la esfera
+      // Ignorar colliders bajo los pies de la esfera (suelos / escalones)
       if (box.max.y <= feetY + stepOffset) continue;
 
       this.tmpClosest.set(

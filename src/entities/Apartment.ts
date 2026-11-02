@@ -1,9 +1,3 @@
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-const loader = new GLTFLoader();
-
-export function loadApartment(scene: THREE.Scene) {
-  loader.load("/models/apartment/ModernApartment.glb", (gltf) => {
-    scene.add(gltf.scene);
-  });
-}
+// Eliminado: el apartamento se carga vía ZoneManager.
+// Archivo conservado vacío para no romper imports antiguos.
+export {};

@@ -15,6 +15,8 @@ export type EnemySystemConfig = {
   detectionRange?: number;
   /** Rango de detección cuando el player corre */
   detectionRangeRunning?: number;
+  /** Radio de la cápsula del player para resolver el contacto físico */
+  playerRadius?: number;
 };
 
 export type EnemyAdvancedInput = {
@@ -38,10 +40,14 @@ export type EnemyAdvancedInput = {
   occluderMeshes?: THREE.Object3D[];
 };
 
+const SAME_FLOOR_DY = 2.5;
+const TORSO_OFFSET_Y = 0.9;
+
 export class EnemySystem {
   private speed: number;
   private catchDistance: number;
   private grace: number;
+  private playerRadius: number;
 
   public behaviorState: EnemyBehaviorState = "IDLE";
 
@@ -63,11 +69,6 @@ export class EnemySystem {
   // Post-hit stun: el enemy se queda quieto N segundos tras golpear
   private stunTimer = 0;
 
-  /** Congela al enemy durante `seconds` segundos (tras un golpe, etc.) */
-  stun(seconds: number) {
-    this.stunTimer = seconds;
-  }
-
   // Last known position + search state
   private lastKnownPos = new THREE.Vector3();
   private hasLastKnownPos = false;
@@ -78,16 +79,20 @@ export class EnemySystem {
   private projMatrix = new THREE.Matrix4();
   private enemySphere = new THREE.Sphere();
 
-  // LOS raycast (throttled: runs every 3rd frame)
+  // LOS raycast (throttled: cada 3 frames)
   private raycaster = new THREE.Raycaster();
   private _camPos = new THREE.Vector3();
   private _toEnemy = new THREE.Vector3();
+  private _torsoPos = new THREE.Vector3();
   private losFrame = 0;
   private cachedLOS = false;
 
-  // Movement
+  // Movimiento
   private tmpDir = new THREE.Vector3();
   private enemyPrev = new THREE.Vector3();
+
+  // Empuje al hacer contacto con el player (evita que lo atraviese)
+  private pushDir = new THREE.Vector3();
 
   constructor(
     private enemy: Enemy,
@@ -101,45 +106,29 @@ export class EnemySystem {
     this.searchDuration = cfg.searchDuration ?? 4;
     this.detectionRange = cfg.detectionRange ?? 8;
     this.detectionRangeRunning = cfg.detectionRangeRunning ?? 14;
+    this.playerRadius = cfg.playerRadius ?? 0.3;
   }
 
-  /** Compat con llamadas antiguas (sin flashlight ni occluders) */
-  update(dt: number, camera: THREE.Camera, playerPos: THREE.Vector3) {
-    return this.updateAdvanced({
-      dt,
-      camera,
-      playerPos,
-      flashlightOn: true,
-      playerRunning: false,
-      objectivesCollected: 0,
-      objectivesTotal: 0,
-    });
+  /** Congela al enemy durante `seconds` segundos (tras un golpe, etc.) */
+  stun(seconds: number) {
+    this.stunTimer = seconds;
   }
+
+  // ── Loop principal ───────────────────────────────────────────────────────
 
   updateAdvanced(input: EnemyAdvancedInput): boolean {
     const { dt, camera, playerPos } = input;
 
     this.enemy.updateAnimation(dt);
 
+    // Grace inicial (tras spawn)
     if (this.grace > 0) {
       this.grace -= dt;
       this.enemy.setAnimState("idle");
       return false;
     }
 
-    // Distancia horizontal (ignora la diferencia de Y intrínseca entre cabeza
-    // del player y pies del enemy)
-    const dxP = this.enemy.position.x - playerPos.x;
-    const dzP = this.enemy.position.z - playerPos.z;
-    const d = Math.hypot(dxP, dzP);
-
-    // Diferencia vertical: si el player está en otro piso, ni chase ni catch.
-    // Player a y≈1.8 (cabeza), enemy a y≈0.2 (pies) → ~1.6m de base.
-    // Un piso típico tiene 2.5m+, así que 2.5 separa bien mismo piso vs otro.
-    const dyP = Math.abs(this.enemy.position.y - playerPos.y);
-    const sameFloor = dyP < 2.5;
-
-    // Post-hit stun: el enemy se queda quieto
+    // Stun post-hit
     if (this.stunTimer > 0) {
       this.stunTimer -= dt;
       this.enemy.setAnimState("idle");
@@ -147,123 +136,79 @@ export class EnemySystem {
       return false;
     }
 
-    // Rango de detección dinámico: más lejos si el player corre
+    // Distancia horizontal y check de "mismo piso"
+    const dxP = this.enemy.position.x - playerPos.x;
+    const dzP = this.enemy.position.z - playerPos.z;
+    const horizDist = Math.hypot(dxP, dzP);
+    const sameFloor =
+      Math.abs(this.enemy.position.y - playerPos.y) < SAME_FLOOR_DY;
+
+    // Visibilidad y freeze por linterna
+    const inFrustum = this.isInFrustum(camera);
+    const los = inFrustum ? this.evaluateLOS(camera, input.occluderMeshes) : false;
+    this.lastInFrustum = inFrustum;
+    this.lastHasLOS = los;
+
+    const freeze = this.updateFreeze(input.flashlightOn && inFrustum && los, dt);
+    this.lastFrozen = freeze;
+
+    // Decidir movimiento
+    this.enemyPrev.copy(this.enemy.position);
     const activeRange = input.playerRunning
       ? this.detectionRangeRunning
       : this.detectionRange;
 
-    // ── Visibilidad ──────────────────────────────────────────────────────────
-    const inFrustum = this.isInFrustum(camera);
-    let los: boolean;
-    if (inFrustum) {
-      if (this.losFrame++ % 3 === 0) {
-        this.cachedLOS = this.hasLineOfSight(
-          camera,
-          input.occluderMeshes ?? [],
-        );
-      }
-      los = this.cachedLOS;
-    } else {
-      los = false;
-    }
-    // Freeze SOLO con la luz de la linterna encendida apuntando al enemy
-    const wantsFreeze = input.flashlightOn && inFrustum && los;
-
-    this.lastInFrustum = inFrustum;
-    this.lastHasLOS = los;
-
-    // Freeze con break: tras `freezeBreakTime` segundos el enemy rompe el
-    // freeze y queda en modo "slow walk" hasta que lo vuelvas a congelar.
-    let freeze: boolean;
-    if (wantsFreeze) {
-      if (this.freezeTimer === 0) {
-        // Inicio de un nuevo ciclo de freeze → reset del slow-walk
-        this.slowAfterBreak = false;
-      }
-      this.freezeTimer += dt;
-      freeze = this.freezeTimer < this.freezeBreakTime;
-      if (!freeze) this.slowAfterBreak = true;
-    } else {
-      this.freezeTimer = 0;
-      freeze = false;
-    }
-    this.lastFrozen = freeze;
-
-    this.enemyPrev.copy(this.enemy.position);
-
-    // ── Decidir target y estado ──────────────────────────────────────────────
     if (freeze) {
-      // Congelado por la linterna (aún no rompió el freeze)
       this.enemy.setAnimState("idle");
       this.behaviorState = "IDLE";
-    } else if (d <= activeRange && sameFloor) {
-      // Player dentro del rango y mismo piso → CHASE
+    } else if (horizDist <= activeRange && sameFloor) {
       this.lastKnownPos.copy(playerPos);
       this.hasLastKnownPos = true;
       this.searchTimer = this.searchDuration;
-      this.moveToward(playerPos, d, dt, input);
+      this.moveToward(playerPos, dt, input);
       this.behaviorState = "CHASE";
     } else if (this.hasLastKnownPos && this.searchTimer > 0) {
-      // Player fuera de rango pero tenemos última posición → SEARCH
-      const dSearch = this.enemy.position.distanceTo(this.lastKnownPos);
-      if (dSearch > 0.8) {
-        // Ir hacia la última posición conocida (velocidad reducida)
-        this.moveToward(this.lastKnownPos, dSearch, dt, input, 0.6);
-        this.behaviorState = "SEARCH";
-      } else {
-        // Llegó a la posición, esperar mientras busca
-        this.enemy.setAnimState("idle");
-        this.behaviorState = "SEARCH";
-      }
-      this.searchTimer -= dt;
-      if (this.searchTimer <= 0) {
-        this.hasLastKnownPos = false;
-      }
+      this.tickSearch(dt, input);
     } else {
-      // Nada que hacer
       this.behaviorState = "IDLE";
       this.enemy.setAnimState("idle");
     }
 
+    // Resolver colisión contra geometría del nivel
     this.collision.resolveSphere(
       this.enemy.position,
       this.enemyPrev,
       this.enemy.radius,
     );
 
-    // Ajustar Y al suelo — permite subir escaleras / rampas
-    const floorY = this.collision.getFloorAt(
+    // Ajustar Y al suelo (permite subir escaleras / rampas)
+    this.enemy.position.y = this.collision.getFloorAt(
       this.enemy.position.x,
       this.enemy.position.z,
       this.enemy.position.y,
       this.enemy.radius,
     );
-    this.enemy.position.y = floorY;
 
-    const cdx = this.enemy.position.x - playerPos.x;
-    const cdz = this.enemy.position.z - playerPos.z;
-    const caught =
-      sameFloor && Math.hypot(cdx, cdz) < this.catchDistance;
-    if (caught) this.behaviorState = "ATTACK";
-    return caught;
+    // ── Colisión enemy ↔ player ─────────────────────────────────────────────
+    // Empuja al enemy fuera de la cápsula del player y, si llega a tocarlo
+    // dentro del rango de captura, devuelve true → caught.
+    return this.resolveContactWithPlayer(playerPos, sameFloor);
   }
 
-  // ── Movement helper ────────────────────────────────────────────────────────
+  // ── Movimiento ───────────────────────────────────────────────────────────
 
   private moveToward(
     target: THREE.Vector3,
-    _dist: number,
     dt: number,
     input: EnemyAdvancedInput,
     speedMult: number = 1,
   ) {
     let finalSpeed: number;
     if (this.slowAfterBreak) {
-      // Tras romper el freeze: walk lento fijo, sin bonuses por objetivos
+      // Tras romper el freeze: walk lento fijo, sin bonus por objetivos
       finalSpeed = 1.5 * speedMult;
     } else {
       finalSpeed = this.speed * speedMult;
-      // Presión por objetivos recogidos
       const ratio =
         input.objectivesTotal > 0
           ? input.objectivesCollected / input.objectivesTotal
@@ -274,28 +219,49 @@ export class EnemySystem {
     this.tmpDir.copy(target).sub(this.enemy.position);
     this.tmpDir.y = 0;
 
-    if (this.tmpDir.lengthSq() > 0.0001) {
-      this.tmpDir.normalize();
-      this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
-      this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
-      this.enemy.setAnimState("walk");
+    if (this.tmpDir.lengthSq() <= 1e-4) {
+      this.enemy.setAnimState("idle");
+      return;
+    }
+
+    this.tmpDir.normalize();
+    this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
+    this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
+    this.enemy.setAnimState("walk");
+  }
+
+  private tickSearch(dt: number, input: EnemyAdvancedInput) {
+    const dSearch = this.enemy.position.distanceTo(this.lastKnownPos);
+    if (dSearch > 0.8) {
+      this.moveToward(this.lastKnownPos, dt, input, 0.6);
     } else {
       this.enemy.setAnimState("idle");
     }
+    this.behaviorState = "SEARCH";
+    this.searchTimer -= dt;
+    if (this.searchTimer <= 0) this.hasLastKnownPos = false;
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+  // ── Freeze por linterna ──────────────────────────────────────────────────
 
-  /**
-   * Comprueba si el enemy está dentro del frustum de la cámara.
-   * Usa una esfera grande centrada en el torso para ser MUY generoso —
-   * así detecta "mirada" aunque el player esté mirando la cabeza o los pies.
-   */
-  private _torsoPos = new THREE.Vector3();
+  private updateFreeze(wantsFreeze: boolean, dt: number): boolean {
+    if (!wantsFreeze) {
+      this.freezeTimer = 0;
+      return false;
+    }
+    if (this.freezeTimer === 0) this.slowAfterBreak = false;
+    this.freezeTimer += dt;
+    const stillFrozen = this.freezeTimer < this.freezeBreakTime;
+    if (!stillFrozen) this.slowAfterBreak = true;
+    return stillFrozen;
+  }
+
+  // ── Visibilidad ──────────────────────────────────────────────────────────
+
   private isInFrustum(camera: THREE.Camera): boolean {
-    // Actualizar matrices de la cámara — IMPORTANTE: matrixWorldInverse
-    // sólo se recalcula dentro del render loop, así que lo forzamos aquí.
-    camera.updateMatrixWorld(true);
+    // Asegura que las matrices de la cámara están al día. Pasamos `false`
+    // porque la cámara no tiene jerarquía relevante por encima.
+    camera.updateMatrixWorld(false);
     camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
 
     this.projMatrix.multiplyMatrices(
@@ -303,19 +269,25 @@ export class EnemySystem {
       camera.matrixWorldInverse,
     );
     this.frustum.setFromProjectionMatrix(this.projMatrix);
-    this._torsoPos.copy(this.enemy.position).add(new THREE.Vector3(0, 0.9, 0));
+
+    this._torsoPos
+      .copy(this.enemy.position)
+      .add(_TORSO_OFFSET);
     this.enemySphere.set(this._torsoPos, this.enemy.radius + 1.2);
     return this.frustum.intersectsSphere(this.enemySphere);
   }
 
-  /**
-   * Dispara un rayo desde la cámara al torso del enemy.
-   * Si algo intercepta ANTES de llegar → LOS bloqueado → false.
-   * Si no hay occluders → asume visión directa → true.
-   *
-   * Apuntamos al torso (no a los pies) para que el rayo vaya casi horizontal
-   * y no choque con el suelo o mobiliario cercano al pie del enemy.
-   */
+  /** Throttled (1/3 frames) line-of-sight evaluation. */
+  private evaluateLOS(
+    camera: THREE.Camera,
+    occluders: THREE.Object3D[] | undefined,
+  ): boolean {
+    if (this.losFrame++ % 3 === 0) {
+      this.cachedLOS = this.hasLineOfSight(camera, occluders ?? []);
+    }
+    return this.cachedLOS;
+  }
+
   private hasLineOfSight(
     camera: THREE.Camera,
     occluders: THREE.Object3D[],
@@ -323,8 +295,7 @@ export class EnemySystem {
     if (occluders.length === 0) return true;
 
     camera.getWorldPosition(this._camPos);
-    // Torso del enemy: position (pies) + ~0.9m
-    this._torsoPos.copy(this.enemy.position).add(new THREE.Vector3(0, 0.9, 0));
+    this._torsoPos.copy(this.enemy.position).add(_TORSO_OFFSET);
     this._toEnemy.copy(this._torsoPos).sub(this._camPos);
     const dist = this._toEnemy.length();
     if (dist < 0.1) return true;
@@ -332,11 +303,59 @@ export class EnemySystem {
     this._toEnemy.multiplyScalar(1 / dist);
 
     this.raycaster.set(this._camPos, this._toEnemy);
-    // Parar antes de llegar al enemy para no impactar su propio mesh.
-    // Usamos radius*2 + margen para cubrir todo el cuerpo del enemy.
+    // Parar antes de tocar el cuerpo del enemy
     this.raycaster.far = Math.max(0.01, dist - (this.enemy.radius * 2 + 0.2));
 
-    const hits = this.raycaster.intersectObjects(occluders, false);
-    return hits.length === 0;
+    return this.raycaster.intersectObjects(occluders, false).length === 0;
+  }
+
+  // ── Contacto enemy ↔ player ──────────────────────────────────────────────
+
+  /**
+   * Empuja al enemy fuera de la cápsula del player para que NUNCA lo atraviese.
+   * Devuelve true si el contacto cae dentro del rango de captura → hit.
+   */
+  private resolveContactWithPlayer(
+    playerPos: THREE.Vector3,
+    sameFloor: boolean,
+  ): boolean {
+    if (!sameFloor) return false;
+
+    const dx = this.enemy.position.x - playerPos.x;
+    const dz = this.enemy.position.z - playerPos.z;
+    const distSq = dx * dx + dz * dz;
+
+    // Suma de radios efectiva para colisión "blanda"
+    const contactRadius = this.enemy.radius + this.playerRadius;
+    const contactRadiusSq = contactRadius * contactRadius;
+
+    if (distSq < contactRadiusSq) {
+      const dist = Math.sqrt(Math.max(distSq, 1e-6));
+
+      // Empujar al enemy al borde de la cápsula del player
+      this.pushDir.set(dx, 0, dz);
+      if (dist > 1e-4) this.pushDir.multiplyScalar(1 / dist);
+      else this.pushDir.set(1, 0, 0); // fallback determinista si están exactamente alineados
+
+      this.enemy.position.x = playerPos.x + this.pushDir.x * contactRadius;
+      this.enemy.position.z = playerPos.z + this.pushDir.z * contactRadius;
+
+      // Orientar hacia el player para feedback visual
+      this.enemy.root.rotation.y = Math.atan2(-this.pushDir.x, -this.pushDir.z);
+
+      this.behaviorState = "ATTACK";
+      return true;
+    }
+
+    // Si no hay contacto físico pero está dentro del catch tradicional → catch
+    if (distSq < this.catchDistance * this.catchDistance) {
+      this.behaviorState = "ATTACK";
+      return true;
+    }
+    return false;
   }
 }
+
+// Vector reutilizado fuera del ciclo de vida de la clase para que sea
+// realmente compartido por todas las instancias (suele haber 1).
+const _TORSO_OFFSET = new THREE.Vector3(0, TORSO_OFFSET_Y, 0);

@@ -48,18 +48,14 @@ export class InteractiveDoor {
 
     this.root.traverse((obj) => { obj.matrixAutoUpdate = true; });
 
-    // ── Debug: volcar el árbol de nombres del modelo ──
-    {
-      const names: string[] = [];
-      this.root.traverse((o) => { if (o.name) names.push(o.name); });
-      console.log("[InteractiveDoor] Nombres en el modelo:", names);
-    }
-
     // Buscar el pivote por múltiples nombres posibles
     this.pivot = findByNames(this.root, PIVOT_NAMES);
 
     if (!this.pivot) {
-      console.warn("[InteractiveDoor] No se encontró el pivote. Nombres buscados:", PIVOT_NAMES);
+      console.warn(
+        "[InteractiveDoor] No se encontró el pivote. Nombres buscados:",
+        PIVOT_NAMES,
+      );
     } else {
       this.baseAngle = this.pivot.rotation.y;
       this.currentAngle = this.baseAngle;

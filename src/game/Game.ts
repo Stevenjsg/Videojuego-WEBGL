@@ -8,11 +8,11 @@ import { Player } from "@entities/Player";
 import { Enemy } from "@entities/Enemy";
 import { setupLevelMeshes } from "@world/Level1";
 import { loadZone1 } from "@world/Zone1";
+import { ChunkedLevel } from "@world/ChunkedLevel";
 import type { LevelSpawns } from "@world/Zone1";
 import { loadEXREnvironment } from "@world/sky";
 import { CollisionSystem } from "@systems/CollisionSystem";
 import { ControlsSystem } from "@systems/ControlsSystem";
-import { UISystem } from "@systems/UISystem";
 import { EnemySystem } from "@systems/EnemySystem";
 import { Debugger } from "@/utils/debugger";
 import { PostFXSystem } from "@systems/PostFXSystem";
@@ -28,8 +28,11 @@ import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
 import type { PickupType } from "@entities/Pickup";
 import type { GameUI, GameState } from "./types";
+import { GAME } from "./constants";
+import { hideOverlay, setGameOverUI } from "./state";
+import { bindLoadingUI } from "@/core/assets";
 
-/** Maps Zone1 item type names to PickupType + model URL + optional scale. */
+/** Mapeo de items de Zone1 a configuración de pickup. */
 const ZONE1_ITEM_MAP: Record<
   string,
   { pickup: PickupType; url: string; scale?: number }
@@ -46,9 +49,6 @@ const ZONE1_ITEM_MAP: Record<
   Fusible: { pickup: "objective", url: "/models/assets/fuse.glb", scale: 0.2 },
   Fuse: { pickup: "objective", url: "/models/assets/fuse.glb", scale: 1 },
 };
-import { GAME } from "./constants";
-import { hideOverlay, setGameOverUI } from "./state";
-import { bindLoadingUI } from "@/core/assets";
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
@@ -66,7 +66,6 @@ export class Game {
   private enemy!: Enemy;
   private enemySystem!: EnemySystem;
 
-  private uiSystem: UISystem;
   private debugger: Debugger;
 
   private collision = new CollisionSystem({
@@ -80,25 +79,24 @@ export class Game {
   private pendingAudios: THREE.PositionalAudio[] = [];
   private audioResumed = false;
 
-  // Preloaded audio buffers
+  // Audio buffers preloaded
   private doorOpenBuffer: AudioBuffer | null = null;
   private footstepsAudio: THREE.Audio | null = null;
   private footstepsPlaying = false;
 
-  // Ambient + breathing audio
   private ambienceAudio: THREE.Audio | null = null;
   private breathingAudio: THREE.Audio | null = null;
   private breathingPlaying = false;
 
   // Hit / HP system
   private playerHP: number = GAME.PLAYER.HP;
-  private hitGraceTimer: number = 0;
-  private playerSpeedPenalty: number = 0; // 0.0 – 1.0 (fraction of speed lost)
+  private hitGraceTimer = 0;
+  private playerSpeedPenalty = 0; // 0..1
 
   // Overlay DOM para el flash rojo en cada hit
   private hitFlashEl: HTMLDivElement | null = null;
 
-  // Puzzle del fusible: necesario para abrir la puerta especial
+  // Puzzle del fusible
   private fuseBox: THREE.Object3D | null = null;
   private fuseBoxPos = new THREE.Vector3();
   private hasFuse = false;
@@ -118,6 +116,18 @@ export class Game {
   /** Meshes del nivel usados para el raycast de línea de visión del enemy */
   private levelMeshes: THREE.Object3D[] = [];
 
+  // Zone transition
+  private specialDoor: InteractiveDoor | null = null;
+  private zone1Data: {
+    map: THREE.Group;
+    colliders: THREE.Box3[];
+    level: ChunkedLevel;
+  } | null = null;
+  private zone2Loaded = false;
+
+  // Locked door message
+  private lockedMsgTimer = 0;
+
   constructor(
     private mount: HTMLElement,
     private ui: GameUI,
@@ -126,7 +136,6 @@ export class Game {
     this.scene = createScene();
     this.camera = createCamera(this.mount);
 
-    this.uiSystem = new UISystem(this.ui);
     this.debugger = new Debugger({
       debugEl:
         this.ui.debug ??
@@ -144,12 +153,7 @@ export class Game {
     this.mount.appendChild(this.hitFlashEl);
   }
 
-  private triggerHitFlash() {
-    if (!this.hitFlashEl) return;
-    this.hitFlashEl.classList.remove("active");
-    void this.hitFlashEl.offsetWidth; // forzar reflow para reiniciar la animación
-    this.hitFlashEl.classList.add("active");
-  }
+  // ── Lifecycle ────────────────────────────────────────────────────────────
 
   async start() {
     bindLoadingUI();
@@ -169,7 +173,7 @@ export class Game {
     this.renderer.dispose();
   }
 
-  // -------------------- setup --------------------
+  // ── Setup ────────────────────────────────────────────────────────────────
 
   private createAndConfigureRenderer() {
     const r = createRenderer(this.mount);
@@ -190,7 +194,97 @@ export class Game {
   }
 
   private async initWorld() {
-    const loadingEl = document.getElementById("loading");
+    const ld = this.queryLoadingDom();
+    ld.show();
+    ld.setStage("Preparando…");
+    ld.setTitle("Preparando…");
+    ld.setProgress(0);
+
+    this.initControls();
+    this.initPostFX();
+    this.zoneManager = this.createZoneManager(ld);
+
+    this.registerApartmentZone();
+
+    // ── Zone 1 (mapa base) ──
+    ld.setStage("Cargando zona 1…");
+    ld.setTitle("Cargando zona 1…");
+    // Solo el core (colliders + spawns); lo visual llega por chunks.
+    const zone1 = await loadZone1(this.scene, GAME.LEVEL1_ZONE1.URL, {
+      renderer: this.renderer,
+      position: GAME.LEVEL1_ZONE1.POS,
+      onChunk: (chunk) => {
+        setupLevelMeshes(chunk);
+        this.collectLOSMeshesFrom(chunk);
+      },
+    });
+    const zone1Colliders = setupLevelMeshes(zone1.map);
+    this.zone1Data = {
+      map: zone1.map,
+      colliders: zone1Colliders,
+      level: zone1.level,
+    };
+
+    // BUGFIX: las meshes de LOS deben venir de la zona ACTIVA, no de un
+    // apartamento que tarda en cargar. Recolectamos las visibles de zone1.
+    this.collectLOSMeshesFrom(zone1.map);
+
+    // ── Chunks cercanos al spawn + puertas (en paralelo) ──
+    // El resto de chunks sigue cargando en segundo plano durante el juego.
+    const spawn = this.computePlayerSpawn(zone1.spawns);
+    const [doorRoot] = await Promise.all([
+      downloadWithProgress(
+        `/models/assets/puerta_interactiva.glb?v=${Date.now()}`,
+      ).then((blob) => loadGLBFromBlob(blob)),
+      zone1.level.stream({
+        focus: () => this.player?.position ?? spawn,
+        gateRadius: GAME.LEVEL1_ZONE1.GATE_RADIUS,
+        onProgress: (p) => ld.setProgress(p),
+      }),
+    ]);
+    const doorColliders = this.spawnDoors(doorRoot, zone1.spawns.doors);
+
+    // Cuando Zona1 termine, precargar el apartamento en la caché HTTP para
+    // que la transición sea casi instantánea.
+    zone1.level.complete.then(() => ChunkedLevel.prefetch(GAME.LEVEL1.URL));
+
+    // ── HDRI ──
+    ld.setStage("Cargando iluminación…");
+    ld.setTitle("Cargando iluminación…");
+    await this.initEnvironment();
+
+    // Fuse_Box: guardar referencia y posición
+    if (zone1.spawns.fuseBox) {
+      this.fuseBox = zone1.spawns.fuseBox;
+      this.fuseBox.getWorldPosition(this.fuseBoxPos);
+    }
+
+    // ── Entidades + colisiones ──
+    this.initEntities(zone1.spawns);
+
+    const baseColliders = zone1Colliders.concat(doorColliders);
+    this.initCollisions(baseColliders);
+    this.zoneManager.onCollisionsChanged = () => {
+      this.initCollisions(
+        baseColliders.concat(this.zoneManager.getAllDynamicColliders()),
+      );
+    };
+
+    // ── Audio ──
+    this.initAudio(zone1.spawns);
+
+    // ── Spawn + UI ──
+    this.initSpawn(spawn);
+    this.initUI();
+
+    ld.setProgress(1);
+    ld.setTitle("Listo");
+    ld.setStage("Listo");
+    setTimeout(() => ld.hide(), 200);
+  }
+
+  private queryLoadingDom() {
+    const root = document.getElementById("loading");
     const fill = document.getElementById(
       "loading-bar-fill",
     ) as HTMLDivElement | null;
@@ -201,250 +295,90 @@ export class Game {
       ".loading-title",
     ) as HTMLDivElement | null;
 
-    const setTitle = (s: string) => {
-      if (title) title.textContent = s;
+    return {
+      show: () => root?.classList.remove("hidden"),
+      hide: () => root?.classList.add("hidden"),
+      setTitle: (s: string) => {
+        if (title) title.textContent = s;
+      },
+      setStage: (s: string) => {
+        if (text) text.textContent = s;
+      },
+      setProgress: (p01: number) => {
+        if (!fill || !text) return;
+        const p = Math.round(p01 * 100);
+        fill.style.width = `${p}%`;
+        text.textContent = `${p}%`;
+      },
     };
-    const setStage = (s: string) => {
-      if (text) text.textContent = s;
-    };
-    const setProgress = (p01: number) => {
-      if (!fill || !text) return;
-      const p = Math.round(p01 * 100);
-      fill.style.width = `${p}%`;
-      text.textContent = `${p}%`;
-    };
+  }
 
-    loadingEl?.classList.remove("hidden");
-    setStage("Preparando…");
-    setTitle("Preparando…");
-    setProgress(0);
-
-    this.initControls();
-    this.initPostFX();
-
-    // ── 0) Inicializar Zone Manager ──
-    this.zoneManager = new ZoneManager(
+  private createZoneManager(ld: ReturnType<Game["queryLoadingDom"]>) {
+    return new ZoneManager(
       this.scene,
       this.collision,
-      (ratio) => setProgress(ratio),
-      (msg) => setStage(msg),
+      (ratio) => ld.setProgress(ratio),
+      (msg) => ld.setStage(msg),
+      this.renderer,
     );
+  }
 
-    // ── 1) Registrar Zonas Dinámicas (Apartment) ──
+  private registerApartmentZone() {
     const lp = GAME.LEVEL1.POS;
     this.zoneManager.addZone({
       id: "ModernApartment",
       url: GAME.LEVEL1.URL,
       position: new THREE.Vector3(lp.x, lp.y, lp.z),
-      // Unreachable trigger — Zone2 only loads via forceLoadZone when
-      // the special door is opened on the transition floor.
+      // Trigger inalcanzable: la zona solo se fuerza al abrir la puerta
+      // especial sobre el suelo de transición.
       triggerBox: new THREE.Box3(
         new THREE.Vector3(9999, 9999, 9999),
         new THREE.Vector3(9999, 9999, 9999),
       ),
-      onLoad: (root) => {
-        root.traverse((child) => {
-          if ((child as any).isMesh) this.levelMeshes.push(child);
-        });
-      },
+      gateRadius: GAME.LEVEL1.GATE_RADIUS,
+      // Por cada chunk (core incluido) a medida que llega.
+      onChunk: (chunk) => this.collectLOSMeshesFrom(chunk),
     });
+  }
 
-    // ── 2) Zone 1 (Core base spawn level) ──
-    setStage("Cargando zona 1…");
-    setTitle("Cargando zona 1…");
-    const zone1 = await loadZone1(this.scene, GAME.LEVEL1_ZONE1.URL);
-    const zp = GAME.LEVEL1_ZONE1.POS;
-    zone1.map.position.set(zp.x, zp.y, zp.z);
-    zone1.map.updateMatrixWorld(true);
-    const zone1Colliders = setupLevelMeshes(zone1.map);
-    this.zone1Data = { map: zone1.map, colliders: zone1Colliders };
+  /** Añade al pool de meshes de LOS las geometrías visibles del root. */
+  private collectLOSMeshesFrom(root: THREE.Object3D) {
+    root.traverse((child) => {
+      if ((child as any).isMesh && child.visible) this.levelMeshes.push(child);
+    });
+  }
 
-    // ── 2.5) Puertas ──
-    setStage("Cargando puertas…");
-    setTitle("Cargando puertas…");
-    const doorBlob = await downloadWithProgress(
-      `/models/assets/puerta_interactiva.glb?v=${Date.now()}`,
-      (p) => {
-        if (p.ratio != null) setProgress(p.ratio);
-      },
-    );
-    const doorRoot = await loadGLBFromBlob(doorBlob, setStage);
+  private spawnDoors(
+    doorRoot: THREE.Object3D,
+    doorSpawns: LevelSpawns["doors"],
+  ): THREE.Box3[] {
     const doorColliders: THREE.Box3[] = [];
+    const wp = new THREE.Vector3();
+    const wq = new THREE.Quaternion();
+    const ws = new THREE.Vector3();
 
-    for (const doorSpawn of zone1.spawns.doors) {
-      const doorModel = doorRoot.clone();
+    for (const spawn of doorSpawns) {
+      const model = doorRoot.clone();
+      spawn.node.getWorldPosition(wp);
+      spawn.node.getWorldQuaternion(wq);
+      spawn.node.getWorldScale(ws);
 
-      const doorSpawnWorldPos = new THREE.Vector3();
-      const doorSpawnWorldQuat = new THREE.Quaternion();
-      const doorSpawnWorldScale = new THREE.Vector3();
-      doorSpawn.node.getWorldPosition(doorSpawnWorldPos);
-      doorSpawn.node.getWorldQuaternion(doorSpawnWorldQuat);
-      doorSpawn.node.getWorldScale(doorSpawnWorldScale);
-
-      const interactiveDoor = new InteractiveDoor({
-        model: doorModel,
-        position: doorSpawnWorldPos,
-        quaternion: doorSpawnWorldQuat,
-        scale: doorSpawnWorldScale,
-        requiresKey: doorSpawn.requiresKey,
+      const door = new InteractiveDoor({
+        model,
+        position: wp.clone(),
+        quaternion: wq.clone(),
+        scale: ws.clone(),
+        requiresKey: spawn.requiresKey,
       });
 
-      this.scene.add(interactiveDoor.root);
-      this.doors.push(interactiveDoor);
+      this.scene.add(door.root);
+      this.doors.push(door);
+      if (door.collider) doorColliders.push(door.collider);
+      doorColliders.push(...setupLevelMeshes(door.root));
 
-      if (interactiveDoor.collider) {
-        doorColliders.push(interactiveDoor.collider);
-      }
-      doorColliders.push(...setupLevelMeshes(interactiveDoor.root));
-
-      // Track the special door for zone transition
-      if (doorSpawn.requiresKey === "Llave Especial") {
-        this.specialDoor = interactiveDoor;
-      }
+      if (spawn.requiresKey === "Llave Especial") this.specialDoor = door;
     }
-
-    // ── 3) HDRI ──
-    setStage("Cargando iluminación…");
-    setTitle("Cargando iluminación…");
-    await this.initEnvironment();
-
-    // Fuse_Box: guardar referencia y posición mundial para interacción
-    if (zone1.spawns.fuseBox) {
-      this.fuseBox = zone1.spawns.fuseBox;
-      this.fuseBox.getWorldPosition(this.fuseBoxPos);
-    }
-
-    // ── 4) Entities, collisions, UI ──
-    this.initEntities(zone1.spawns);
-
-    // Inicializamos colisiones base (solo las de zone1 y doors). El ZoneManager inyectará el Apartment automáticamente.
-    const baseColliders = zone1Colliders.concat(doorColliders);
-    this.initCollisions(baseColliders);
-
-    // Registrar callback dinámico para recompilarlas si una zona entra/sale
-    this.zoneManager.onCollisionsChanged = () => {
-      this.initCollisions(
-        baseColliders.concat(this.zoneManager.getAllDynamicColliders()),
-      );
-    };
-
-    // ── 4.5) Audio setup ──
-    this.audioListener = new THREE.AudioListener();
-    this.camera.add(this.audioListener);
-    const audioLoader = new THREE.AudioLoader();
-
-    // Preload door open SFX
-    audioLoader.load("/music/sfx/fx_openDoor.mp3", (buffer) => {
-      this.doorOpenBuffer = buffer;
-    });
-
-    // Preload footsteps (global audio, not positional)
-    this.footstepsAudio = new THREE.Audio(this.audioListener);
-    audioLoader.load("/music/sfx/fx_indoor-footsteps.mp3", (buffer) => {
-      this.footstepsAudio!.setBuffer(buffer);
-      this.footstepsAudio!.setLoop(true);
-      this.footstepsAudio!.setVolume(0.35);
-    });
-
-    // Ambient night wildlife (global, subtle loop)
-    this.ambienceAudio = new THREE.Audio(this.audioListener);
-    audioLoader.load(
-      "/music/ambience/ambience-night-wildlife-a.mp3",
-      (buffer) => {
-        this.ambienceAudio!.setBuffer(buffer);
-        this.ambienceAudio!.setLoop(true);
-        this.ambienceAudio!.setVolume(0.08);
-        // Si el resume ya pasó, reproducir ahora
-        if (this.audioResumed && !this.ambienceAudio!.isPlaying) {
-          this.ambienceAudio!.play();
-        }
-      },
-    );
-
-    // Heavy breathing SFX (preload only — triggered on 2nd hit)
-    this.breathingAudio = new THREE.Audio(this.audioListener);
-    audioLoader.load("/music/sfx/fx_heavy-breathing.mp3", (buffer) => {
-      this.breathingAudio!.setBuffer(buffer);
-      this.breathingAudio!.setLoop(true);
-      this.breathingAudio!.setVolume(0.5);
-    });
-
-    // Fluorescent lights — manual loop with 2s pause between plays
-    // We preload the buffer once and share it across all fluorescent audio sources.
-    audioLoader.load("/music/sfx/sfx_fluorescent-light.wav", (buffer) => {
-      for (const lightInfo of zone1.spawns.lights) {
-        if (lightInfo.lightType !== "fluorescent") continue;
-
-        const positionalAudio = new THREE.PositionalAudio(this.audioListener!);
-        positionalAudio.setBuffer(buffer);
-        positionalAudio.setRefDistance(2);
-        positionalAudio.setMaxDistance(3);
-        positionalAudio.setLoop(false);
-        positionalAudio.setVolume(0.05);
-
-        const wp = new THREE.Vector3();
-        lightInfo.node.getWorldPosition(wp);
-        positionalAudio.position.copy(wp);
-        this.scene.add(positionalAudio);
-        this.pendingAudios.push(positionalAudio);
-
-        // Manual loop: replay after 2s gap using the native source.onended
-        const playWithGap = () => {
-          if (!positionalAudio.buffer) return;
-          positionalAudio.play();
-          // Three.js creates a new source node each play(), so hook onended after play
-          if (positionalAudio.source) {
-            positionalAudio.source.onended = () => {
-              positionalAudio.isPlaying = false;
-              setTimeout(playWithGap, 2000);
-            };
-          }
-        };
-        // Store the replay function so resumeOnce can use it
-        (positionalAudio as any)._playWithGap = playWithGap;
-      }
-    });
-
-    // Resume all audio on first user gesture (Chrome autoplay policy)
-    const resumeOnce = () => {
-      if (this.audioResumed) return;
-      this.audioResumed = true;
-      const ctx = this.audioListener!.context;
-      if (ctx.state === "suspended") ctx.resume();
-      for (const audio of this.pendingAudios) {
-        if (audio.buffer && !audio.isPlaying) {
-          // Use the manual-loop function if available (fluorescent lights)
-          const playFn = (audio as any)._playWithGap;
-          if (playFn) {
-            playFn();
-          } else {
-            audio.play();
-          }
-        }
-      }
-      // Start ambient audio on first gesture
-      if (this.ambienceAudio?.buffer && !this.ambienceAudio.isPlaying) {
-        this.ambienceAudio.play();
-      }
-      document.removeEventListener("click", resumeOnce);
-      document.removeEventListener("keydown", resumeOnce);
-    };
-    document.addEventListener("click", resumeOnce);
-    document.addEventListener("keydown", resumeOnce);
-
-    // Player spawn: zone1 empty or hardcoded fallback
-    const playerSpawn = zone1.spawns.player
-      ? new THREE.Vector3().setFromMatrixPosition(
-          zone1.spawns.player.matrixWorld,
-        )
-      : new THREE.Vector3(...LEVEL1_SPAWN);
-    this.initSpawn(playerSpawn);
-    this.initUI();
-
-    setProgress(1);
-    setTitle("Listo");
-    setStage("Listo");
-    setTimeout(() => loadingEl?.classList.add("hidden"), 200);
+    return doorColliders;
   }
 
   private initControls() {
@@ -455,7 +389,7 @@ export class Game {
       ignoreMouseEvents: 2,
     });
 
-    // MUY IMPORTANTE: player root a la escena (no metas enemigo aquí)
+    // Player root a la escena (no el enemigo)
     this.scene.add(this.controls.object);
   }
 
@@ -486,7 +420,6 @@ export class Game {
       scale: GAME.ENEMY.SCALE,
     });
 
-    // Enemy spawn: zone1 empty or hardcoded fallback
     if (spawns?.enemy) {
       this.enemy.position.setFromMatrixPosition(spawns.enemy.matrixWorld);
     } else {
@@ -504,7 +437,12 @@ export class Game {
       searchDuration: GAME.ENEMY.SEARCH_DURATION,
       detectionRange: GAME.ENEMY.DETECTION_RANGE,
       detectionRangeRunning: GAME.ENEMY.DETECTION_RANGE_RUNNING,
+      // BUGFIX: comunicar el radio del player al enemigo para resolver
+      // correctamente la colisión cápsula-cápsula.
+      playerRadius: GAME.PLAYER.RADIUS,
     });
+
+    // Orientación inicial del enemy hacia un punto de referencia
     const dir = new THREE.Vector3(5, 0, -2).sub(this.enemy.position);
     dir.y = 0;
     dir.normalize();
@@ -525,10 +463,9 @@ export class Game {
     });
     this.inventory = new InventorySystem(this.flashlight);
 
-    // Pickups: apartment hardcoded eliminated (baterias del spawn point)
     this.pickups = [];
 
-    // Pickups: zone1 spawns (Spawn_Item_ empties from GLB)
+    // Pickups: zone1 spawns (Spawn_Item_)
     if (spawns) {
       for (const item of spawns.items) {
         const wp = new THREE.Vector3().setFromMatrixPosition(
@@ -557,13 +494,21 @@ export class Game {
 
     for (const p of this.pickups) this.scene.add(p.root);
 
-    // Interacciones
     this.interact = new InteractSystem(this.camera, this.pickups, this.doors);
   }
 
   private initCollisions(colliders: THREE.Box3[]) {
     this.collision.setColliders(colliders);
     this.debugger.setColliders(this.scene, colliders);
+  }
+
+  private computePlayerSpawn(spawns: LevelSpawns): THREE.Vector3 {
+    if (spawns.player) {
+      return new THREE.Vector3().setFromMatrixPosition(
+        spawns.player.matrixWorld,
+      );
+    }
+    return new THREE.Vector3(...LEVEL1_SPAWN);
   }
 
   private initSpawn(spawn: THREE.Vector3) {
@@ -577,7 +522,140 @@ export class Game {
     hideOverlay(this.ui);
   }
 
-  // -------------------- loop --------------------
+  // ── Audio ────────────────────────────────────────────────────────────────
+
+  private initAudio(spawns: LevelSpawns) {
+    this.audioListener = new THREE.AudioListener();
+    this.camera.add(this.audioListener);
+    const audioLoader = new THREE.AudioLoader();
+
+    audioLoader.load("/music/sfx/fx_openDoor.mp3", (buffer) => {
+      this.doorOpenBuffer = buffer;
+    });
+
+    this.footstepsAudio = new THREE.Audio(this.audioListener);
+    audioLoader.load("/music/sfx/fx_indoor-footsteps.mp3", (buffer) => {
+      this.footstepsAudio!.setBuffer(buffer);
+      this.footstepsAudio!.setLoop(true);
+      this.footstepsAudio!.setVolume(0.35);
+    });
+
+    this.ambienceAudio = new THREE.Audio(this.audioListener);
+    audioLoader.load(
+      "/music/ambience/ambience-night-wildlife-a.mp3",
+      (buffer) => {
+        this.ambienceAudio!.setBuffer(buffer);
+        this.ambienceAudio!.setLoop(true);
+        this.ambienceAudio!.setVolume(0.08);
+        if (this.audioResumed && !this.ambienceAudio!.isPlaying) {
+          this.ambienceAudio!.play();
+        }
+      },
+    );
+
+    this.breathingAudio = new THREE.Audio(this.audioListener);
+    audioLoader.load("/music/sfx/fx_heavy-breathing.mp3", (buffer) => {
+      this.breathingAudio!.setBuffer(buffer);
+      this.breathingAudio!.setLoop(true);
+      this.breathingAudio!.setVolume(0.5);
+    });
+
+    audioLoader.load("/music/sfx/sfx_fluorescent-light.wav", (buffer) => {
+      this.spawnFluorescentLights(spawns, buffer);
+    });
+
+    this.bindAudioResume();
+  }
+
+  private spawnFluorescentLights(spawns: LevelSpawns, buffer: AudioBuffer) {
+    const wp = new THREE.Vector3();
+    for (const lightInfo of spawns.lights) {
+      if (lightInfo.lightType !== "fluorescent") continue;
+
+      const positionalAudio = new THREE.PositionalAudio(this.audioListener!);
+      positionalAudio.setBuffer(buffer);
+      positionalAudio.setRefDistance(2);
+      positionalAudio.setMaxDistance(3);
+      positionalAudio.setLoop(false);
+      positionalAudio.setVolume(0.05);
+
+      lightInfo.node.getWorldPosition(wp);
+      positionalAudio.position.copy(wp);
+      this.scene.add(positionalAudio);
+      this.pendingAudios.push(positionalAudio);
+
+      // Loop manual con pausa de 2s
+      const playWithGap = () => {
+        if (!positionalAudio.buffer) return;
+        positionalAudio.play();
+        if (positionalAudio.source) {
+          positionalAudio.source.onended = () => {
+            positionalAudio.isPlaying = false;
+            setTimeout(playWithGap, 2000);
+          };
+        }
+      };
+      (positionalAudio as any)._playWithGap = playWithGap;
+    }
+  }
+
+  private bindAudioResume() {
+    const resumeOnce = () => {
+      if (this.audioResumed) return;
+      this.audioResumed = true;
+      const ctx = this.audioListener!.context;
+      if (ctx.state === "suspended") ctx.resume();
+      for (const audio of this.pendingAudios) {
+        if (audio.buffer && !audio.isPlaying) {
+          const playFn = (audio as any)._playWithGap;
+          if (playFn) playFn();
+          else audio.play();
+        }
+      }
+      if (this.ambienceAudio?.buffer && !this.ambienceAudio.isPlaying) {
+        this.ambienceAudio.play();
+      }
+      document.removeEventListener("click", resumeOnce);
+      document.removeEventListener("keydown", resumeOnce);
+    };
+    document.addEventListener("click", resumeOnce);
+    document.addEventListener("keydown", resumeOnce);
+  }
+
+  private playDoorSound(door: InteractiveDoor) {
+    if (!this.doorOpenBuffer || !this.audioListener) return;
+    const sound = new THREE.PositionalAudio(this.audioListener);
+    sound.setBuffer(this.doorOpenBuffer);
+    sound.setRefDistance(3);
+    sound.setMaxDistance(12);
+    sound.setVolume(0.05);
+    sound.setLoop(false);
+
+    const wp = new THREE.Vector3();
+    door.root.getWorldPosition(wp);
+    sound.position.copy(wp);
+    this.scene.add(sound);
+    sound.play();
+    sound.onEnded = () => this.scene.remove(sound);
+  }
+
+  private updateFootsteps() {
+    if (!this.footstepsAudio || !this.footstepsAudio.buffer) return;
+
+    const axes = this.controls.getAxes();
+    const isWalking =
+      this.controls.isLocked && (axes.forward !== 0 || axes.strafe !== 0);
+
+    if (isWalking && !this.footstepsPlaying) {
+      this.footstepsPlaying = true;
+      if (!this.footstepsAudio.isPlaying) this.footstepsAudio.play();
+    } else if (!isWalking && this.footstepsPlaying) {
+      this.footstepsPlaying = false;
+      if (this.footstepsAudio.isPlaying) this.footstepsAudio.stop();
+    }
+  }
+
+  // ── Loop ─────────────────────────────────────────────────────────────────
 
   private loop = () => {
     const dt = this.time.update();
@@ -597,102 +675,26 @@ export class Game {
     // Streaming chunking update
     this.zoneManager.update(this.player.position);
 
-    // --- gameplay input ---
     // Toggle linterna
     if (this.input.justPressed("KeyF")) {
       this.flashlight.toggle();
     }
 
-    // Prompt de interacción: mostrar si miramos a una puerta o pickup cercano
-    const nearDoor = this.interact.tryInteractDoor(3.5);
-    const nearPickup = this.interact.tryPickup(2.0);
-    const nearFuseBox = this.isNearFuseBox(2.5);
-    const showPrompt =
-      nearDoor !== null || nearPickup !== null || nearFuseBox;
-    if (this.ui.interactPrompt) {
-      this.ui.interactPrompt.classList.toggle("hidden", !showPrompt);
-    }
-    // Update interact text based on what we're looking at
-    if (this.ui.interactText) {
-      if (nearPickup) {
-        this.ui.interactText.textContent = "Recoger";
-      } else if (nearFuseBox) {
-        this.ui.interactText.textContent = this.puzzleSolved
-          ? "Energía OK"
-          : "Usar fusible";
-      } else if (nearDoor) {
-        this.ui.interactText.textContent = nearDoor.isOpen ? "Cerrar" : "Abrir";
-      }
-    }
+    this.updateInteractPrompt();
 
-    // Interactuar
     if (this.input.justPressed("KeyE")) {
-      const picked = this.interact.tryPickup(2.0);
-      if (picked) {
-        switch (picked.type) {
-          case "flashlight":
-            this.inventory.pickupFlashlight();
-            break;
-          case "battery":
-            this.inventory.pickupBattery(picked.batteryAmount);
-            break;
-          case "key":
-            this.inventory.pickupKey(picked.cfg.keyName ?? "");
-            break;
-          case "objective":
-            this.inventory.pickupObjective();
-            if (picked.cfg.keyName === "Fuse") this.hasFuse = true;
-            break;
-        }
-        this.interact.removePickup(picked, this.scene);
-      } else if (this.isNearFuseBox(2.5)) {
-        // Interacción con el cuadro de fusibles
-        if (this.puzzleSolved) {
-          // Ya resuelto, no hacer nada
-        } else if (!this.hasFuse) {
-          this.showMessage("Hace falta un fusible");
-        } else {
-          this.puzzleSolved = true;
-          this.hasFuse = false;
-          this.showMessage("Puerta abierta");
-        }
-      } else {
-        const door = this.interact.tryInteractDoor(3.5);
-        if (door) {
-          const isSpecial = door === this.specialDoor;
-          const hasKey =
-            !door.requiresKey || this.inventory.hasKey(door.requiresKey);
-          if (hasKey && (!isSpecial || this.puzzleSolved)) {
-            door.toggle();
-            this.playDoorSound(door);
-            // Check if this is the special door for zone transition
-            this.checkZoneTransition(door);
-          } else if (isSpecial && hasKey && !this.puzzleSolved) {
-            this.showMessage("La puerta no tiene energía");
-          } else {
-            this.showLockedMessage(door.requiresKey!);
-          }
-        }
-      }
+      this.handleInteract();
     }
 
-    // Actualizar puertas
-    for (const door of this.doors) {
-      door.update(dt);
-    }
+    for (const door of this.doors) door.update(dt);
 
     this.flashlight.update(dt);
-
-    // Audio: footsteps
     this.updateFootsteps();
-
-    // Battery UI update
     this.updateBatteryUI();
 
     // Hit grace cooldown
     if (this.hitGraceTimer > 0) this.hitGraceTimer -= dt;
 
-    // Enemy: congela sólo si linterna encendida + frustum + LOS libre
     const caught = this.enemySystem.updateAdvanced({
       dt,
       camera: this.camera,
@@ -704,38 +706,7 @@ export class Game {
       occluderMeshes: this.levelMeshes,
     });
 
-    const enemyDist = this.enemy.position.distanceTo(this.player.position);
-    if (enemyDist < 2) {
-      console.log(
-        `[ENEMY] dist=${enemyDist.toFixed(3)} caught=${caught} grace=${this.hitGraceTimer.toFixed(2)} state=${this.enemySystem.behaviorState}`,
-      );
-    }
-
-    if (caught && this.hitGraceTimer <= 0) {
-      this.playerHP--;
-      this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
-      // El enemy se queda quieto 2s para dar oportunidad de huir
-      this.enemySystem.stun(2);
-      // Efecto visual rojo
-      this.triggerHitFlash();
-      console.log(
-        `[HIT] HP: ${this.playerHP}/${GAME.PLAYER.HP} | speedPenalty: ${this.playerSpeedPenalty} → ${this.playerHP === 2 ? 0.1 : this.playerHP === 1 ? 0.15 : "DEAD"}`,
-      );
-      if (this.playerHP <= 0) {
-        // 3er golpe → Game Over
-        this.setGameOver();
-      } else if (this.playerHP === 1) {
-        // 2do golpe: -5% extra velocidad (total -15%) + respiración pesada
-        this.playerSpeedPenalty = 0.15;
-        if (this.breathingAudio?.buffer && !this.breathingPlaying) {
-          this.breathingAudio.play();
-          this.breathingPlaying = true;
-        }
-      } else if (this.playerHP === 2) {
-        // 1er golpe: -10% velocidad
-        this.playerSpeedPenalty = 0.1;
-      }
-    }
+    if (caught && this.hitGraceTimer <= 0) this.applyEnemyHit();
 
     this.debugger.update(this.player.position, this.camera, {
       flashlightOn: this.flashlight.isOn,
@@ -747,47 +718,141 @@ export class Game {
       enemyHasLOS: this.enemySystem.lastHasLOS,
     });
 
-    this.input.endFrame(); // si existe en tu Input
-  }
-  // -------------------- audio helpers --------------------
-
-  private playDoorSound(door: InteractiveDoor) {
-    if (!this.doorOpenBuffer || !this.audioListener) return;
-    const sound = new THREE.PositionalAudio(this.audioListener);
-    sound.setBuffer(this.doorOpenBuffer);
-    sound.setRefDistance(3);
-    sound.setMaxDistance(12);
-    sound.setVolume(0.05);
-    sound.setLoop(false);
-    // Position at the door
-    const wp = new THREE.Vector3();
-    door.root.getWorldPosition(wp);
-    sound.position.copy(wp);
-    this.scene.add(sound);
-    sound.play();
-    // Clean up after playback
-    sound.onEnded = () => {
-      this.scene.remove(sound);
-    };
+    this.input.endFrame();
   }
 
-  private updateFootsteps() {
-    if (!this.footstepsAudio || !this.footstepsAudio.buffer) return;
-
+  private updatePlayer(dt: number) {
     const axes = this.controls.getAxes();
-    const isWalking =
-      this.controls.isLocked && (axes.forward !== 0 || axes.strafe !== 0);
+    const speed =
+      GAME.PLAYER.BASE_SPEED *
+      this.controls.getSpeedMultiplier() *
+      (1 - this.playerSpeedPenalty);
 
-    if (isWalking && !this.footstepsPlaying) {
-      this.footstepsPlaying = true;
-      if (!this.footstepsAudio.isPlaying) this.footstepsAudio.play();
-    } else if (!isWalking && this.footstepsPlaying) {
-      this.footstepsPlaying = false;
-      if (this.footstepsAudio.isPlaying) this.footstepsAudio.stop();
+    const steps = GAME.PLAYER.SUBSTEPS;
+    const stepDt = dt / steps;
+
+    for (let i = 0; i < steps; i++) {
+      this.prevPos.copy(this.player.position);
+      this.player.update(stepDt, axes, speed);
+      this.collision.resolvePlayer(this.player.position, this.prevPos);
     }
   }
 
-  // -------------------- battery UI --------------------
+  // ── Interacciones ────────────────────────────────────────────────────────
+
+  private updateInteractPrompt() {
+    const nearDoor = this.interact.tryInteractDoor(3.5);
+    const nearPickup = this.interact.tryPickup(2.0);
+    const nearFuseBox = this.isNearFuseBox(2.5);
+    const showPrompt = nearDoor !== null || nearPickup !== null || nearFuseBox;
+
+    this.ui.interactPrompt?.classList.toggle("hidden", !showPrompt);
+
+    if (this.ui.interactText) {
+      if (nearPickup) {
+        this.ui.interactText.textContent = "Recoger";
+      } else if (nearFuseBox) {
+        this.ui.interactText.textContent = this.puzzleSolved
+          ? "Energía OK"
+          : "Usar fusible";
+      } else if (nearDoor) {
+        this.ui.interactText.textContent = nearDoor.isOpen ? "Cerrar" : "Abrir";
+      }
+    }
+  }
+
+  private handleInteract() {
+    const picked = this.interact.tryPickup(2.0);
+    if (picked) {
+      this.consumePickup(picked);
+      return;
+    }
+    if (this.isNearFuseBox(2.5)) {
+      this.handleFuseBoxInteraction();
+      return;
+    }
+    const door = this.interact.tryInteractDoor(3.5);
+    if (door) this.handleDoorInteraction(door);
+  }
+
+  private consumePickup(picked: Pickup) {
+    switch (picked.type) {
+      case "flashlight":
+        this.inventory.pickupFlashlight();
+        break;
+      case "battery":
+        this.inventory.pickupBattery(picked.batteryAmount);
+        break;
+      case "key":
+        this.inventory.pickupKey(picked.cfg.keyName ?? "");
+        break;
+      case "objective":
+        this.inventory.pickupObjective();
+        if (picked.cfg.keyName === "Fuse") this.hasFuse = true;
+        break;
+    }
+    this.interact.removePickup(picked, this.scene);
+  }
+
+  private handleFuseBoxInteraction() {
+    if (this.puzzleSolved) return;
+    if (!this.hasFuse) {
+      this.showMessage("Hace falta un fusible");
+      return;
+    }
+    this.puzzleSolved = true;
+    this.hasFuse = false;
+    this.showMessage("Puerta abierta");
+  }
+
+  private handleDoorInteraction(door: InteractiveDoor) {
+    const isSpecial = door === this.specialDoor;
+    const hasKey = !door.requiresKey || this.inventory.hasKey(door.requiresKey);
+
+    if (hasKey && (!isSpecial || this.puzzleSolved)) {
+      door.toggle();
+      this.playDoorSound(door);
+      this.checkZoneTransition(door);
+      return;
+    }
+    if (isSpecial && hasKey && !this.puzzleSolved) {
+      this.showMessage("La puerta no tiene energía");
+      return;
+    }
+    this.showLockedMessage(door.requiresKey!);
+  }
+
+  // ── Hit handling ─────────────────────────────────────────────────────────
+
+  private triggerHitFlash() {
+    if (!this.hitFlashEl) return;
+    this.hitFlashEl.classList.remove("active");
+    void this.hitFlashEl.offsetWidth; // forzar reflow para reiniciar la animación
+    this.hitFlashEl.classList.add("active");
+  }
+
+  private applyEnemyHit() {
+    this.playerHP--;
+    this.hitGraceTimer = GAME.ENEMY.HIT_GRACE_SECONDS;
+    this.enemySystem.stun(2);
+    this.triggerHitFlash();
+
+    if (this.playerHP <= 0) {
+      this.setGameOver();
+      return;
+    }
+    if (this.playerHP === 1) {
+      this.playerSpeedPenalty = 0.15;
+      if (this.breathingAudio?.buffer && !this.breathingPlaying) {
+        this.breathingAudio.play();
+        this.breathingPlaying = true;
+      }
+    } else if (this.playerHP === 2) {
+      this.playerSpeedPenalty = 0.1;
+    }
+  }
+
+  // ── Battery UI ───────────────────────────────────────────────────────────
 
   private updateBatteryUI() {
     const hasFL = this.flashlight.hasFlashlight;
@@ -807,9 +872,7 @@ export class Game {
     }
   }
 
-  // -------------------- locked door message --------------------
-
-  private lockedMsgTimer = 0;
+  // ── Mensajes UI ──────────────────────────────────────────────────────────
 
   private showLockedMessage(keyName: string) {
     this.showMessage(`Hace falta ${keyName}`);
@@ -833,34 +896,25 @@ export class Game {
     return Math.hypot(dx, dz) < maxDist;
   }
 
-  // -------------------- zone transition --------------------
-
-  /** Track the special door instance for zone2 transition */
-  private specialDoor: InteractiveDoor | null = null;
-  private zone1Data: { map: THREE.Group; colliders: THREE.Box3[] } | null =
-    null;
-  private zone2Loaded = false;
+  // ── Zone transition ──────────────────────────────────────────────────────
 
   private checkZoneTransition(door: InteractiveDoor) {
     if (door !== this.specialDoor) return;
-    if (!door.isOpen) return; // only trigger on opening
-
-    // Check if player is standing on SM_Safe_Floor_4x4.093
-    const onFloor = this.isPlayerOnTransitionFloor();
-    if (!onFloor) return;
-
+    if (!door.isOpen) return; // solo al abrir
+    if (!this.isPlayerOnTransitionFloor()) return;
     this.triggerZone2Transition(door);
   }
 
   private isPlayerOnTransitionFloor(): boolean {
-    // Raycast down from player to check floor name
     const ray = new THREE.Raycaster();
     const origin = this.player.position.clone();
     origin.y += 0.1;
     ray.set(origin, new THREE.Vector3(0, -1, 0));
     ray.far = 3.0;
 
-    const hits = ray.intersectObjects(this.scene.children, true);
+    // BUGFIX rendimiento: limitar el raycast a las meshes ya recolectadas
+    // para LOS en vez de recorrer toda la escena.
+    const hits = ray.intersectObjects(this.levelMeshes, false);
     for (const hit of hits) {
       let obj: THREE.Object3D | null = hit.object;
       while (obj) {
@@ -875,48 +929,21 @@ export class Game {
     if (this.zone2Loaded) return;
     this.zone2Loaded = true;
 
-    // Close special door permanently so player can't go back
-    door.toggle(); // close it
-    door.requiresKey = "__locked_permanent__"; // prevent reopening
+    // Cerrar y bloquear permanentemente
+    door.toggle();
+    door.requiresKey = "__locked_permanent__";
 
-    // Load zone 2 via ZoneManager (force-load immediately)
     this.zoneManager.forceLoadZone("ModernApartment");
 
-    // Unload zone1 to free memory
     if (this.zone1Data) {
-      this.scene.remove(this.zone1Data.map);
-      this.zone1Data.map.traverse((obj: any) => {
-        if (obj.isMesh) {
-          if (obj.geometry) obj.geometry.dispose();
-          if (obj.material) {
-            if (Array.isArray(obj.material)) {
-              obj.material.forEach((m: any) => m.dispose());
-            } else {
-              obj.material.dispose();
-            }
-          }
-        }
-      });
-      // Remove zone1 colliders
+      // Quita el mapa, cancela chunks pendientes y libera GPU (texturas incl.)
+      this.zone1Data.level.dispose();
       this.collision.removeColliders(this.zone1Data.colliders);
       this.zone1Data = null;
-    }
-  }
 
-  private updatePlayer(dt: number) {
-    const axes = this.controls.getAxes();
-    const speed =
-      GAME.PLAYER.BASE_SPEED *
-      this.controls.getSpeedMultiplier() *
-      (1 - this.playerSpeedPenalty);
-
-    const steps = GAME.PLAYER.SUBSTEPS;
-    const stepDt = dt / steps;
-
-    for (let i = 0; i < steps; i++) {
-      this.prevPos.copy(this.player.position);
-      this.player.update(stepDt, axes, speed);
-      this.collision.resolvePlayer(this.player.position, this.prevPos);
+      // Vaciar las meshes de LOS de zone1 — el ZoneManager las repoblará
+      // cuando termine de cargar la zona del apartamento.
+      this.levelMeshes.length = 0;
     }
   }
 
@@ -929,7 +956,7 @@ export class Game {
     setGameOverUI(this.ui);
   }
 
-  // -------------------- resize --------------------
+  // ── Resize ───────────────────────────────────────────────────────────────
 
   private onResize = () => {
     const w = this.mount.clientWidth;

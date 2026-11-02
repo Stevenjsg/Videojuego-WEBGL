@@ -12,8 +12,6 @@ export type EnemyConfig = {
 export class Enemy {
   public root = new THREE.Group();
   public radius = 0.45;
-  public health = 100;
-  public detectionRange = 8;
 
   private mixer: THREE.AnimationMixer | null = null;
   private actions = new Map<EnemyAnimState, THREE.AnimationAction>();

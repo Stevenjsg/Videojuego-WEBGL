@@ -1,4 +1,4 @@
-import type { GameState, GameUI } from "./types";
+import type { GameUI } from "./types";
 
 export function setGameOverUI(ui: GameUI) {
   ui.overlay.classList.remove("hidden");
@@ -8,8 +8,4 @@ export function setGameOverUI(ui: GameUI) {
 
 export function hideOverlay(ui: GameUI) {
   ui.overlay.classList.add("hidden");
-}
-
-export function setState(next: GameState) {
-  return next;
 }

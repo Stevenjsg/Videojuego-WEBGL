@@ -4,3 +4,5 @@ dist
 
 .env
 .env.local
+# Modelos fuente pesados (se convierten a chunks con `pnpm chunk-maps`)
+assets-src/

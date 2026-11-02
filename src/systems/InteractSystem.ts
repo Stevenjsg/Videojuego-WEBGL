@@ -10,49 +10,33 @@ export class InteractSystem {
   constructor(
     private camera: THREE.Camera,
     private pickups: Pickup[],
-    private doors: InteractiveDoor[] = []
+    private doors: InteractiveDoor[] = [],
   ) {}
 
-  /** Intenta recoger el pickup mirando al frente (raycast). */
+  /** Devuelve el pickup al que apunta la cámara (o null). */
   tryPickup(maxDistance = 2.0): Pickup | null {
-    this.camera.getWorldDirection(this.forward);
-    this.raycaster.set(this.getCameraWorldPos(), this.forward);
-    this.raycaster.far = maxDistance;
-
+    this.prepareRay(maxDistance);
     const objects = this.pickups.map((p) => p.root);
     const hits = this.raycaster.intersectObjects(objects, true);
-
     if (hits.length === 0) return null;
 
-    const hitRoot = this.findPickupRoot(hits[0].object);
-    if (!hitRoot) return null;
-
-    return this.pickups.find((p) => p.root === hitRoot) ?? null;
+    const hitRoot = this.findAncestor(hits[0].object, (o) =>
+      this.pickups.some((p) => p.root === o),
+    );
+    return hitRoot ? this.pickups.find((p) => p.root === hitRoot) ?? null : null;
   }
 
-  /** Intenta interactuar con una puerta. */
+  /** Devuelve la puerta a la que apunta la cámara (o null). */
   tryInteractDoor(maxDistance = 2.5): InteractiveDoor | null {
-    this.camera.getWorldDirection(this.forward);
-    this.raycaster.set(this.getCameraWorldPos(), this.forward);
-    this.raycaster.far = maxDistance;
-
+    this.prepareRay(maxDistance);
     const objects = this.doors.map((d) => d.root);
     const hits = this.raycaster.intersectObjects(objects, true);
-
     if (hits.length === 0) return null;
 
-    let cur: THREE.Object3D | null = hits[0].object;
-    for (let i = 0; i < 10 && cur; i++) {
-      const door = this.doors.find((d) => d.root === cur);
-      if (door) return door;
-      cur = cur.parent;
-    }
-    return null;
-  }
-
-  /** Compatibilidad: si antes llamabas update() */
-  update(): Pickup | null {
-    return this.tryPickup(2.0);
+    const hitRoot = this.findAncestor(hits[0].object, (o) =>
+      this.doors.some((d) => d.root === o),
+    );
+    return hitRoot ? this.doors.find((d) => d.root === hitRoot) ?? null : null;
   }
 
   removePickup(p: Pickup, scene: THREE.Scene) {
@@ -61,18 +45,24 @@ export class InteractSystem {
     if (idx >= 0) this.pickups.splice(idx, 1);
   }
 
-  private getCameraWorldPos() {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  private prepareRay(maxDistance: number) {
+    this.camera.getWorldDirection(this.forward);
     this.camera.getWorldPosition(this.tmpCamPos);
-    return this.tmpCamPos;
+    this.raycaster.set(this.tmpCamPos, this.forward);
+    this.raycaster.far = maxDistance;
   }
 
-  private findPickupRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  private findAncestor(
+    obj: THREE.Object3D,
+    predicate: (o: THREE.Object3D) => boolean,
+  ): THREE.Object3D | null {
     let cur: THREE.Object3D | null = obj;
-    for (let i = 0; i < 10 && cur; i++) {
-      if (this.pickups.some((p) => p.root === cur)) return cur;
+    for (let i = 0; i < 16 && cur; i++) {
+      if (predicate(cur)) return cur;
       cur = cur.parent;
     }
     return null;
   }
 }
-
