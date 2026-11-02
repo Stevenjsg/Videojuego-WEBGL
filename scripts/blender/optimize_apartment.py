@@ -2,6 +2,9 @@
 Optimiza Zona_2.blend (apartamento) para la web, en Blender en modo fondo.
 
 - NO modifica Zona_2.blend: guarda una copia Zona_2_web.blend.
+- Soldado de vértices (Merge by Distance) antes de reducir: los modelos
+  vienen con los vértices separados por cara (casi cada triángulo es una
+  pieza suelta) y el Decimate, sin conectividad, los destroza.
 - Decimate (collapse) en los objetos pesados, como modificador SIN aplicar en
   la copia (se puede ajustar luego) y aplicado al exportar.
 - Texturas a 1024 px como máximo.
@@ -13,7 +16,9 @@ Uso (desde la raíz del proyecto, ~20 s):
   (todo en una línea)
   pnpm chunk-maps ModernApartment
 """
+import bmesh
 import bpy
+import math
 import sys
 
 argv = sys.argv[sys.argv.index("--") + 1:]
@@ -45,7 +50,35 @@ visual = [o for o in env.all_objects
 colliders = [o for o in col.all_objects if o.type == 'MESH']
 skipped = [o.name for o in env.all_objects if o not in visual]
 
-# ── 1. Decimate ──────────────────────────────────────────────────────────────
+# ── 1. Soldar vértices ───────────────────────────────────────────────────────
+MERGE_DIST = 0.0005  # 0.5 mm
+SMOOTH_ANGLE = math.radians(35)
+
+welded = set()
+for ob in visual:
+    me = ob.data
+    if me.name in welded:
+        continue
+    if me.users > 1:
+        ob.data = me = me.copy()
+    welded.add(me.name)
+
+    # Las normales personalizadas son las que separaban los vértices.
+    if me.has_custom_normals:
+        with bpy.context.temp_override(object=ob, active_object=ob):
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=MERGE_DIST)
+    bm.to_mesh(me)
+    bm.free()
+    # Sombreado suave salvo en aristas de más de 35º.
+    me.set_sharp_from_angle(angle=SMOOTH_ANGLE)
+
+deps = bpy.context.evaluated_depsgraph_get()
+
+# ── 2. Decimate ──────────────────────────────────────────────────────────────
 before = after_est = 0
 for ob in visual:
     n = tri_count(ob)
@@ -63,7 +96,7 @@ for ob in visual:
     after_est += target
     print(f"  decimate {ob.name}: {n} -> ~{target}")
 
-# ── 2. Texturas ──────────────────────────────────────────────────────────────
+# ── 3. Texturas ──────────────────────────────────────────────────────────────
 scaled = 0
 for img in bpy.data.images:
     w, h = img.size[:]
@@ -78,7 +111,7 @@ for img in bpy.data.images:
 # Huérfanos (Image_61, materiales sin uso…)
 bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
 
-# ── 3. Exportar ──────────────────────────────────────────────────────────────
+# ── 4. Exportar ──────────────────────────────────────────────────────────────
 # _COLLISION está excluida de la view layer: incluirla para poder seleccionar.
 def find_layer_coll(lc, name):
     if lc.collection.name == name:
