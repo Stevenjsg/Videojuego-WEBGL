@@ -92,6 +92,22 @@ export class NavMeshSystem {
     return true;
   }
 
+  /** Punto caminable aleatorio a menos de `radius` m de `center`. */
+  randomPoint(
+    center: THREE.Vector3,
+    radius: number,
+    out: THREE.Vector3,
+  ): boolean {
+    const { success, randomPoint } = this.query.findRandomPointAroundCircle(
+      center,
+      radius,
+      { halfExtents: QUERY_HALF_EXTENTS },
+    );
+    if (!success) return false;
+    out.set(randomPoint.x, randomPoint.y, randomPoint.z);
+    return true;
+  }
+
   dispose() {
     this.query.destroy();
     this.navMesh.destroy();

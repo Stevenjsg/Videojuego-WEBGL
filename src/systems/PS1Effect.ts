@@ -5,10 +5,12 @@ import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
  * Estética PlayStation 1, todo en GPU (shaders):
  *
  * - Baja resolución: el juego se renderiza a ~240 px de alto y el canvas se
- *   escala sin suavizado (ver Game.applyPixelRatio).
+ *   escala sin suavizado (ver Game.getPixelRatio).
  * - Vértices que tiemblan: la posición en pantalla se ajusta a una rejilla
  *   gruesa, como la GTE de la PS1 (sin subpíxeles).
  * - Color de 15 bits (5 por canal) con tramado Bayer 4x4.
+ * - Miedo (0..1): con el enemy cerca la imagen se degrada (menos colores,
+ *   viñeta, grano, aberración cromática y líneas que tiemblan).
  */
 
 export type PS1Config = {
@@ -45,6 +47,9 @@ export function installVertexSnapping(snapGrid: number) {
 `;
 }
 
+/** Colores por canal con miedo máximo. */
+const FEAR_MIN_LEVELS = 6;
+
 /** Pase final: reduce a `colorBits` por canal con tramado ordenado. */
 export function createPS1ColorPass(colorBits: number) {
   return new ShaderPass({
@@ -52,6 +57,8 @@ export function createPS1ColorPass(colorBits: number) {
     uniforms: {
       tDiffuse: { value: null },
       levels: { value: Math.pow(2, colorBits) - 1 },
+      fear: { value: 0 },
+      time: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -63,7 +70,13 @@ export function createPS1ColorPass(colorBits: number) {
     fragmentShader: /* glsl */ `
       uniform sampler2D tDiffuse;
       uniform float levels;
+      uniform float fear;
+      uniform float time;
       varying vec2 vUv;
+
+      float hash( vec2 p ) {
+        return fract( sin( dot( p, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+      }
 
       // Matriz Bayer 4x4 normalizada a [0, 1)
       float bayer4( vec2 p ) {
@@ -74,9 +87,34 @@ export function createPS1ColorPass(colorBits: number) {
       }
 
       void main() {
-        vec3 color = texture2D( tDiffuse, vUv ).rgb;
+        vec2 uv = vUv;
+
+        // Líneas que se desplazan (señal inestable), solo con mucho miedo.
+        float line = floor( gl_FragCoord.y / 2.0 );
+        uv.x += ( hash( vec2( line, floor( time * 18.0 ) ) ) - 0.5 )
+          * 0.012 * fear * fear;
+
+        // Aberración cromática.
+        float ca = 0.004 * fear;
+        vec3 color = vec3(
+          texture2D( tDiffuse, uv + vec2( ca, 0.0 ) ).r,
+          texture2D( tDiffuse, uv ).g,
+          texture2D( tDiffuse, uv - vec2( ca, 0.0 ) ).b
+        );
+
+        // Grano.
+        color += ( hash( gl_FragCoord.xy + fract( time ) * 97.0 ) - 0.5 )
+          * 0.1 * fear;
+
+        // Viñeta: leve siempre, se cierra con el miedo.
+        float dist = length( vUv - 0.5 ) * ( 1.0 + 0.6 * fear );
+        float vignette = smoothstep( 0.8, 0.25, dist );
+        color *= mix( 1.0, vignette, 0.25 + 0.6 * fear );
+
+        // Menos colores cuanto más miedo, con tramado ordenado.
+        float lv = mix( levels, ${FEAR_MIN_LEVELS.toFixed(1)}, fear );
         float threshold = bayer4( gl_FragCoord.xy ) - 0.5;
-        color = floor( color * levels + 0.5 + threshold ) / levels;
+        color = floor( color * lv + 0.5 + threshold ) / lv;
         gl_FragColor = vec4( clamp( color, 0.0, 1.0 ), 1.0 );
       }
     `,

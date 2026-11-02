@@ -32,6 +32,9 @@ export type EnemyAdvancedInput = {
   /** Si el player está corriendo (Shift) */
   playerRunning: boolean;
 
+  /** Escondido sin que el enemy le haya visto: ni lo detecta ni lo atrapa. */
+  playerHidden?: boolean;
+
   objectivesCollected: number;
   objectivesTotal: number;
 
@@ -50,6 +53,21 @@ const REPATH_INTERVAL = 0.3;
 const REPATH_DISTANCE = 0.75;
 /** Distancia (XZ) a la que un waypoint se da por alcanzado. */
 const WAYPOINT_RADIUS = 0.25;
+
+/**
+ * Radio de colisión con el mundo respecto a `enemy.radius`. Menor que el
+ * margen de la navmesh (= enemy.radius) para que, siguiendo el camino, el
+ * redondeo de celdas no lo deje rozando una pared y atascado.
+ */
+const WORLD_COLLISION_SCALE = 0.75;
+
+/** Patrulla: radio de búsqueda de destinos, velocidad y esperas. */
+const PATROL_RADIUS = 12;
+const PATROL_SPEED_MULT = 0.45;
+const PATROL_WAIT_MIN = 2;
+const PATROL_WAIT_MAX = 5;
+/** Si no llega en este tiempo (puerta cerrada…), elige otro destino. */
+const PATROL_GIVE_UP = 15;
 
 export class EnemySystem {
   private speed: number;
@@ -96,6 +114,12 @@ export class EnemySystem {
   private hasPath = false;
   private pathTarget = new THREE.Vector3();
   private repathTimer = 0;
+
+  // Patrulla (solo con navmesh)
+  private patrolTarget = new THREE.Vector3();
+  private hasPatrolTarget = false;
+  private patrolWait = 0;
+  private patrolTime = 0;
 
   // Movimiento
   private tmpDir = new THREE.Vector3();
@@ -179,7 +203,7 @@ export class EnemySystem {
     if (freeze) {
       this.enemy.setAnimState("idle");
       this.behaviorState = "IDLE";
-    } else if (horizDist <= activeRange && sameFloor) {
+    } else if (!input.playerHidden && horizDist <= activeRange && sameFloor) {
       this.lastKnownPos.copy(playerPos);
       this.hasLastKnownPos = true;
       this.searchTimer = this.searchDuration;
@@ -188,15 +212,14 @@ export class EnemySystem {
     } else if (this.hasLastKnownPos && this.searchTimer > 0) {
       this.tickSearch(dt, input);
     } else {
-      this.behaviorState = "IDLE";
-      this.enemy.setAnimState("idle");
+      this.tickPatrol(dt, input);
     }
 
     // Resolver colisión contra geometría del nivel
     this.collision.resolveSphere(
       this.enemy.position,
       this.enemyPrev,
-      this.enemy.radius,
+      this.enemy.radius * WORLD_COLLISION_SCALE,
     );
 
     // Ajustar Y al suelo (permite subir escaleras / rampas)
@@ -210,6 +233,7 @@ export class EnemySystem {
     // ── Colisión enemy ↔ player ─────────────────────────────────────────────
     // Empuja al enemy fuera de la cápsula del player y, si llega a tocarlo
     // dentro del rango de captura, devuelve true → caught.
+    if (input.playerHidden) return false;
     return this.resolveContactWithPlayer(playerPos, sameFloor);
   }
 
@@ -268,6 +292,44 @@ export class EnemySystem {
       this.pathIndex++;
     }
     return this.path[Math.min(this.pathIndex, last)];
+  }
+
+  /** Sin rastro del jugador: pasea entre puntos aleatorios de la navmesh. */
+  private tickPatrol(dt: number, input: EnemyAdvancedInput) {
+    if (!this.nav || this.patrolWait > 0) {
+      this.patrolWait = Math.max(0, this.patrolWait - dt);
+      this.behaviorState = "IDLE";
+      this.enemy.setAnimState("idle");
+      return;
+    }
+
+    if (!this.hasPatrolTarget) {
+      this.hasPatrolTarget = this.nav.randomPoint(
+        this.enemy.position,
+        PATROL_RADIUS,
+        this.patrolTarget,
+      );
+      this.patrolTime = 0;
+      if (!this.hasPatrolTarget) {
+        this.patrolWait = 1;
+        return;
+      }
+    }
+
+    this.patrolTime += dt;
+    const dx = this.patrolTarget.x - this.enemy.position.x;
+    const dz = this.patrolTarget.z - this.enemy.position.z;
+    if (dx * dx + dz * dz < 0.5 * 0.5 || this.patrolTime > PATROL_GIVE_UP) {
+      this.hasPatrolTarget = false;
+      this.patrolWait =
+        PATROL_WAIT_MIN + Math.random() * (PATROL_WAIT_MAX - PATROL_WAIT_MIN);
+      this.behaviorState = "IDLE";
+      this.enemy.setAnimState("idle");
+      return;
+    }
+
+    this.moveToward(this.patrolTarget, dt, input, PATROL_SPEED_MULT);
+    this.behaviorState = "PATROL";
   }
 
   private tickSearch(dt: number, input: EnemyAdvancedInput) {
