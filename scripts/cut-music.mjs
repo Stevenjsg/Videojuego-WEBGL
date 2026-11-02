@@ -18,9 +18,9 @@ import path from "node:path";
 
 const TRACKS = [
   // El hall de la mansión.
-  { zone: "zona1", name: "horrorland", src: "assets-src/music/zona1_welcome-to-horrorland.mp3" },
-  // La casa (apartamento).
-  { zone: "zona2", name: "house-of-leaves", src: "assets-src/music/zona2_the-house-of-leaves.mp3" },
+  { zone: "zona1", name: "house-of-leaves", src: "assets-src/music/zona1_the-house-of-leaves.mp3" },
+  // El apartamento.
+  { zone: "zona2", name: "horrorland", src: "assets-src/music/zona2_welcome-to-horrorland.mp3" },
 ];
 
 const OUT = "public/music";
