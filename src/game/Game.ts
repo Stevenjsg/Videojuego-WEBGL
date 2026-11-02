@@ -22,6 +22,7 @@ import { InteractSystem } from "@systems/InteractSystem";
 import { InventorySystem } from "@systems/InventorySystem";
 import { LEVEL1_SPAWN } from "@world/levelData";
 import { InteractiveDoor } from "@entities/InteractiveDoor";
+import type { FluorescentLamp } from "@entities/FluorescentLamp";
 import { ZoneManager } from "@systems/ZoneManager";
 import { NavMeshSystem } from "@systems/NavMeshSystem";
 import { installVertexSnapping } from "@systems/PS1Effect";
@@ -112,6 +113,22 @@ export class Game {
   private inventory!: InventorySystem;
   private pickups: Pickup[] = [];
   private doors: InteractiveDoor[] = [];
+  private fluorescentLamps: FluorescentLamp[] = [];
+
+  // Esconderse bajo las mesas (COL_Mesa*)
+  private hideSpots: THREE.Box3[] = [];
+  private hiding: {
+    spot: THREE.Box3;
+    returnPos: THREE.Vector3;
+    /** El enemy te vio meterte: te encontrará igualmente. */
+    spotted: boolean;
+  } | null = null;
+
+  /** Miedo 0..1 según la cercanía del enemy: degrada la imagen (PS1). */
+  private fear = 0;
+
+  /** Suelo de la sala segura: al pisarlo se conecta con el apartamento. */
+  private safeFloor: THREE.Box3 | null = null;
   private interact!: InteractSystem;
   private zoneManager!: ZoneManager;
   private navMesh: NavMeshSystem | null = null;
@@ -121,11 +138,6 @@ export class Game {
 
   // Zone transition
   private specialDoor: InteractiveDoor | null = null;
-  private zone1Data: {
-    map: THREE.Group;
-    colliders: THREE.Box3[];
-    level: ChunkedLevel;
-  } | null = null;
   private zone2Loaded = false;
 
   // Locked door message
@@ -269,15 +281,13 @@ export class Game {
     });
     progress(0.1);
     const zone1Colliders = setupLevelMeshes(zone1.map);
-    this.zone1Data = {
-      map: zone1.map,
-      colliders: zone1Colliders,
-      level: zone1.level,
-    };
 
     // BUGFIX: las meshes de LOS deben venir de la zona ACTIVA, no de un
     // apartamento que tarda en cargar. Recolectamos las visibles de zone1.
     this.collectLOSMeshesFrom(zone1.map);
+    this.collectHideSpots(zone1.map);
+    // GLTFLoader quita los puntos de los nombres: "…4x4.093" → "…4x4093".
+    this.safeFloor = findBox(zone1.map, /SM_Safe_Floor_4x4\.?093/);
 
     // Todo lo que está dentro de la distancia de visión se carga antes de
     // empezar, así no se ve aparecer el mapa. El resto llega en segundo plano.
@@ -405,6 +415,7 @@ export class Game {
       id: "ModernApartment",
       url: GAME.LEVEL1.URL,
       position: new THREE.Vector3(lp.x, lp.y, lp.z),
+      rotationY: GAME.LEVEL1.ROT_Y,
       // Trigger inalcanzable: la zona solo se fuerza al abrir la puerta
       // especial sobre el suelo de transición.
       triggerBox: new THREE.Box3(
@@ -640,6 +651,10 @@ export class Game {
       this.breathingAudio!.setVolume(0.5);
     });
 
+    audioLoader.load("/music/sfx/fx_rain-on-windows-interior-a.mp3", (buffer) =>
+      this.spawnRainSounds(buffer),
+    );
+
     audioLoader.load("/music/sfx/sfx_fluorescent-light.wav", (buffer) => {
       this.spawnFluorescentLights(spawns, buffer);
     });
@@ -659,23 +674,54 @@ export class Game {
       positionalAudio.setLoop(false);
       positionalAudio.setVolume(0.05);
 
-      lightInfo.node.getWorldPosition(wp);
+      // El zumbido sale del propio tubo si lo hay.
+      const lamp = lightInfo.lamp;
+      if (lamp) wp.copy(lamp.center);
+      else lightInfo.node.getWorldPosition(wp);
       positionalAudio.position.copy(wp);
       this.scene.add(positionalAudio);
       this.pendingAudios.push(positionalAudio);
 
-      // Loop manual con pausa de 2s
+      if (lamp) {
+        lamp.setSound(buffer, this.audioListener!.context);
+        this.fluorescentLamps.push(lamp);
+      }
+
+      // Loop manual con pausa de 2s; el parpadeo sigue a cada reproducción.
       const playWithGap = () => {
         if (!positionalAudio.buffer) return;
         positionalAudio.play();
+        lamp?.soundStarted();
         if (positionalAudio.source) {
           positionalAudio.source.onended = () => {
             positionalAudio.isPlaying = false;
+            lamp?.soundEnded();
             setTimeout(playWithGap, 2000);
           };
         }
       };
       (positionalAudio as any)._playWithGap = playWithGap;
+    }
+  }
+
+  /** Lluvia en las dos ventanas sin cristal de la sala del fusible. */
+  private spawnRainSounds(buffer: AudioBuffer) {
+    for (const [x, y, z] of GAME.LEVEL1_ZONE1.RAIN_WINDOWS) {
+      const rain = new THREE.PositionalAudio(this.audioListener!);
+      rain.setBuffer(buffer);
+      rain.setLoop(true);
+      rain.setVolume(0.5);
+      // Lineal: se apaga del todo a 9 m, solo se oye en esa sala.
+      rain.setDistanceModel("linear");
+      rain.setRefDistance(1.5);
+      rain.setMaxDistance(9);
+      // Desfase para que las dos ventanas no suenen idénticas.
+      rain.offset = Math.random() * buffer.duration;
+      rain.position.set(x, y, z);
+      this.scene.add(rain);
+
+      if (this.audioResumed) rain.play();
+      else this.pendingAudios.push(rain);
     }
   }
 
@@ -724,7 +770,9 @@ export class Game {
 
     const axes = this.controls.getAxes();
     const isWalking =
-      this.controls.isLocked && (axes.forward !== 0 || axes.strafe !== 0);
+      !this.hiding &&
+      this.controls.isLocked &&
+      (axes.forward !== 0 || axes.strafe !== 0);
 
     if (isWalking && !this.footstepsPlaying) {
       this.footstepsPlaying = true;
@@ -751,6 +799,7 @@ export class Game {
   private update(dt: number) {
     this.controls.update();
     this.updatePlayer(dt);
+    this.checkSafeRoomEntered();
 
     // Streaming chunking update
     this.zoneManager.update(this.player.position);
@@ -759,6 +808,8 @@ export class Game {
     if (this.input.justPressed("KeyF")) {
       this.flashlight.toggle();
     }
+
+    for (const lamp of this.fluorescentLamps) lamp.update();
 
     this.updateInteractPrompt();
 
@@ -782,12 +833,14 @@ export class Game {
       flashlightOn: this.flashlight.isOn,
       flashlightLight: this.flashlight.light,
       playerRunning: this.controls.getSpeedMultiplier() > 1,
+      playerHidden: this.hiding !== null && !this.hiding.spotted,
       objectivesCollected: this.inventory.objectives,
       objectivesTotal: this.inventory.objectivesTotal,
       occluderMeshes: this.levelMeshes,
     });
 
     if (caught && this.hitGraceTimer <= 0) this.applyEnemyHit();
+    this.updateFear(dt);
 
     this.debugger.update(this.player.position, this.camera, {
       flashlightOn: this.flashlight.isOn,
@@ -803,6 +856,7 @@ export class Game {
   }
 
   private updatePlayer(dt: number) {
+    if (this.hiding) return; // bajo la mesa no se mueve
     const axes = this.controls.getAxes();
     const speed =
       GAME.PLAYER.BASE_SPEED *
@@ -825,12 +879,20 @@ export class Game {
     const nearDoor = this.interact.tryInteractDoor(3.5);
     const nearPickup = this.interact.tryPickup(2.0);
     const nearFuseBox = this.isNearFuseBox(2.5);
-    const showPrompt = nearDoor !== null || nearPickup !== null || nearFuseBox;
+    const hideSpot = this.hiding ? null : this.findHideSpot();
+    const showPrompt =
+      this.hiding !== null ||
+      nearDoor !== null ||
+      nearPickup !== null ||
+      nearFuseBox ||
+      hideSpot !== null;
 
     this.ui.interactPrompt?.classList.toggle("hidden", !showPrompt);
 
     if (this.ui.interactText) {
-      if (nearPickup) {
+      if (this.hiding) {
+        this.ui.interactText.textContent = "Salir";
+      } else if (nearPickup) {
         this.ui.interactText.textContent = "Recoger";
       } else if (nearFuseBox) {
         this.ui.interactText.textContent = this.puzzleSolved
@@ -838,11 +900,17 @@ export class Game {
           : "Usar fusible";
       } else if (nearDoor) {
         this.ui.interactText.textContent = nearDoor.isOpen ? "Cerrar" : "Abrir";
+      } else if (hideSpot) {
+        this.ui.interactText.textContent = "Esconderse";
       }
     }
   }
 
   private handleInteract() {
+    if (this.hiding) {
+      this.stopHiding();
+      return;
+    }
     const picked = this.interact.tryPickup(2.0);
     if (picked) {
       this.consumePickup(picked);
@@ -853,7 +921,80 @@ export class Game {
       return;
     }
     const door = this.interact.tryInteractDoor(3.5);
-    if (door) this.handleDoorInteraction(door);
+    if (door) {
+      this.handleDoorInteraction(door);
+      return;
+    }
+    const spot = this.findHideSpot();
+    if (spot) this.startHiding(spot);
+  }
+
+  // ── Esconderse ───────────────────────────────────────────────────────────
+
+  /** Mesas con hueco debajo (~1 m de alto; los escritorios bajos no valen). */
+  private collectHideSpots(root: THREE.Object3D) {
+    root.traverse((o) => {
+      if (!(o as THREE.Mesh).isMesh || !/^col_mesa/i.test(o.name)) return;
+      const box = new THREE.Box3().setFromObject(o);
+      if (box.max.y - box.min.y >= 0.9) this.hideSpots.push(box);
+    });
+  }
+
+  /** Mesa junto a la que está el jugador (mismo piso, a < 0.9 m). */
+  private findHideSpot(): THREE.Box3 | null {
+    const p = this.player.position;
+    const feetY = p.y - GAME.PLAYER.HEIGHT;
+    for (const spot of this.hideSpots) {
+      if (Math.abs(feetY - spot.min.y) > 0.4) continue;
+      const dx = Math.max(spot.min.x - p.x, 0, p.x - spot.max.x);
+      const dz = Math.max(spot.min.z - p.z, 0, p.z - spot.max.z);
+      if (dx * dx + dz * dz < 0.9 * 0.9) return spot;
+    }
+    return null;
+  }
+
+  private startHiding(spot: THREE.Box3) {
+    const dx = this.enemy.position.x - this.player.position.x;
+    const dz = this.enemy.position.z - this.player.position.z;
+    const state = this.enemySystem.behaviorState;
+    const hunting = state === "CHASE" || state === "ATTACK";
+
+    this.hiding = {
+      spot,
+      returnPos: this.player.position.clone(),
+      spotted: hunting && Math.hypot(dx, dz) < 6,
+    };
+    // Agachado bajo el tablero, en el centro de la mesa.
+    const center = spot.getCenter(new THREE.Vector3());
+    this.player.position.set(center.x, spot.min.y + 0.5, center.z);
+  }
+
+  private stopHiding() {
+    if (!this.hiding) return;
+    this.player.position.copy(this.hiding.returnPos);
+    this.prevPos.copy(this.hiding.returnPos);
+    this.hiding = null;
+  }
+
+  // ── Miedo ────────────────────────────────────────────────────────────────
+
+  private updateFear(dt: number) {
+    const dx = this.enemy.position.x - this.player.position.x;
+    const dz = this.enemy.position.z - this.player.position.z;
+    const dy =
+      this.enemy.position.y - (this.player.position.y - GAME.PLAYER.HEIGHT);
+    // Otra planta cuenta como más lejos.
+    const dist = Math.hypot(dx, dz, dy * 2);
+
+    const proximity = 1 - THREE.MathUtils.smoothstep(dist, 2.5, 14);
+    const state = this.enemySystem.behaviorState;
+    const hunting = state === "CHASE" || state === "ATTACK";
+    const target = proximity * (hunting ? 1 : 0.45);
+
+    // Sube rápido y baja despacio.
+    const rate = target > this.fear ? 3 : 0.6;
+    this.fear += (target - this.fear) * (1 - Math.exp(-rate * dt));
+    this.postFX.setFear(this.fear, performance.now() / 1000);
   }
 
   private consumePickup(picked: Pickup) {
@@ -893,7 +1034,6 @@ export class Game {
     if (hasKey && (!isSpecial || this.puzzleSolved)) {
       door.toggle();
       this.playDoorSound(door);
-      this.checkZoneTransition(door);
       return;
     }
     if (isSpecial && hasKey && !this.puzzleSolved) {
@@ -979,57 +1119,39 @@ export class Game {
 
   // ── Zone transition ──────────────────────────────────────────────────────
 
-  private checkZoneTransition(door: InteractiveDoor) {
-    if (door !== this.specialDoor) return;
-    if (!door.isOpen) return; // solo al abrir
-    if (!this.isPlayerOnTransitionFloor()) return;
-    this.triggerZone2Transition(door);
+  /**
+   * Al pisar la sala segura (tras la puerta especial) la puerta se cierra y
+   * se bloquea a la espalda del jugador, y se carga el apartamento, que está
+   * justo detrás de la puerta de salida de esa sala.
+   */
+  private checkSafeRoomEntered() {
+    const floor = this.safeFloor;
+    if (this.zone2Loaded || !floor) return;
+    const p = this.player.position;
+    const feetY = p.y - GAME.PLAYER.HEIGHT;
+    // Solo la planta baja: encima está el 2º piso (y = 4.8).
+    if (feetY > floor.max.y + 1.5) return;
+    if (p.x < floor.min.x || p.x > floor.max.x) return;
+    if (p.z < floor.min.z || p.z > floor.max.z) return;
+    this.triggerZone2Transition();
   }
 
-  private isPlayerOnTransitionFloor(): boolean {
-    const ray = new THREE.Raycaster();
-    const origin = this.player.position.clone();
-    origin.y += 0.1;
-    ray.set(origin, new THREE.Vector3(0, -1, 0));
-    ray.far = 3.0;
-
-    // BUGFIX rendimiento: limitar el raycast a las meshes ya recolectadas
-    // para LOS en vez de recorrer toda la escena.
-    const hits = ray.intersectObjects(this.levelMeshes, false);
-    for (const hit of hits) {
-      let obj: THREE.Object3D | null = hit.object;
-      while (obj) {
-        if (obj.name.includes("SM_Safe_Floor_4x4.093")) return true;
-        obj = obj.parent;
-      }
-    }
-    return false;
-  }
-
-  private async triggerZone2Transition(door: InteractiveDoor) {
-    if (this.zone2Loaded) return;
+  private triggerZone2Transition() {
     this.zone2Loaded = true;
 
-    // Cerrar y bloquear permanentemente
-    door.toggle();
-    door.requiresKey = "__locked_permanent__";
-
-    this.zoneManager.forceLoadZone("ModernApartment");
-
-    if (this.zone1Data) {
-      // Quita el mapa, cancela chunks pendientes y libera GPU (texturas incl.)
-      this.zone1Data.level.dispose();
-      this.collision.removeColliders(this.zone1Data.colliders);
-      this.zone1Data = null;
-
-      this.enemySystem.setNavMesh(null);
-      this.navMesh?.dispose();
-      this.navMesh = null;
-
-      // Vaciar las meshes de LOS de zone1 — el ZoneManager las repoblará
-      // cuando termine de cargar la zona del apartamento.
-      this.levelMeshes.length = 0;
+    const door = this.specialDoor;
+    if (door) {
+      if (door.isOpen) {
+        door.toggle();
+        this.playDoorSound(door);
+      }
+      door.requiresKey = "__locked_permanent__";
     }
+
+    // Zona1 NO se descarga: la sala segura y su puerta de salida son parte de
+    // ella, y el apartamento está pegado al otro lado. Pesa poco (~5 MB) y la
+    // niebla y la puerta bloqueada ocultan el resto.
+    this.zoneManager.forceLoadZone("ModernApartment");
   }
 
   private setGameOver() {
@@ -1060,4 +1182,15 @@ export class Game {
 
 function nextFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/** Caja en mundo del primer objeto cuyo nombre encaja con `name`. */
+function findBox(root: THREE.Object3D, name: RegExp): THREE.Box3 | null {
+  let box: THREE.Box3 | null = null;
+  root.traverse((o) => {
+    if (!box && name.test(o.name)) {
+      box = new THREE.Box3().setFromObject(o);
+    }
+  });
+  return box;
 }

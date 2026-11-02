@@ -9,6 +9,8 @@ export type ZoneConfig = {
   id: string;
   url: string;
   position: THREE.Vector3;
+  /** Giro en Y (rad) de la zona. */
+  rotationY?: number;
   triggerBox: THREE.Box3; // Jugador dentro de esta caja => cargar. Fuera => descargar.
   onLoad?: (root: THREE.Object3D, colliders: THREE.Box3[]) => void;
   onUnload?: () => void;
@@ -117,6 +119,7 @@ export class ZoneManager {
       },
     });
     level.root.position.copy(zone.position);
+    level.root.rotation.y = zone.rotationY ?? 0;
     this.scene.add(level.root);
     zone.level = level;
     zone.rootObject = level.root;

@@ -62,7 +62,14 @@ export const GAME = {
     /** Generado con `pnpm chunk-maps` desde ModernApartment.glb */
     URL: "/models/apartment/chunks/manifest.json",
     DEBUG: false,
-    POS: { x: -3.22, y: 0, z: 30.5 },
+    /**
+     * Girado 180º y colocado para que su única puerta (hueco entre
+     * COL_WALL_DOOR_LF y .002: x 12.29..13.46, cara exterior z 4.485) quede
+     * justo detrás de la puerta de salida de la sala segura de Zona1
+     * (x -4.1, z 22), con su suelo (COL_FLOOR, y 0.006) a la altura del hall (0.5).
+     */
+    POS: { x: 8.769, y: 0.494, z: 26.485 },
+    ROT_Y: Math.PI,
     /** Metros alrededor del jugador que deben estar cargados al entrar. */
     GATE_RADIUS: VIEW_DISTANCE,
   },
@@ -71,6 +78,11 @@ export const GAME = {
     URL: "/models/Zona1/chunks/manifest.json",
     POS: { x: 0, y: 0, z: 0 },
     DEBUG: false,
+    /** Lluvia: las dos ventanas (sin cristal) de la sala del fusible, 2º piso. */
+    RAIN_WINDOWS: [
+      [-21.3, 6.8, 11.8],
+      [-21.3, 6.8, 3.8],
+    ] as const,
   },
   UI: {
     ITEMS_TOTAL: 5,
