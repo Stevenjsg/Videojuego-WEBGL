@@ -51,6 +51,27 @@
         <div id="fade" class="hidden"></div>
       </div>
 
+      <!-- Menú de pausa (ESC) -->
+      <div id="pause-menu" class="hidden">
+        <div class="pause-card">
+          <div class="pause-title">Pausa</div>
+          <button id="pause-resume" class="pause-btn">Continuar</button>
+          <button id="pause-restart" class="pause-btn">Reiniciar partida</button>
+          <div class="pause-options">
+            <label>Sensibilidad del ratón
+              <input id="opt-sensitivity" type="range" min="0.3" max="2.5" step="0.05" />
+            </label>
+            <label>Volumen
+              <input id="opt-volume" type="range" min="0" max="1" step="0.05" />
+            </label>
+            <label class="pause-check">
+              <input id="opt-retro" type="checkbox" /> Resolución retro (240p)
+            </label>
+          </div>
+          <div class="pause-hint">Pulsa Continuar para volver al juego</div>
+        </div>
+      </div>
+
       <!-- Pantalla de inicio: el juego no arranca hasta pulsar -->
       <div id="start-screen" class="hidden">
         <div id="start-title">Iniciar partida</div>

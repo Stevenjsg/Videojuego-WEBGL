@@ -28,7 +28,12 @@ export type GameUI = {
   startScreen?: HTMLElement;
 };
 
-export type GameState = "LOADING" | "READY" | "PLAYING" | "GAME_OVER";
+export type GameState =
+  | "LOADING"
+  | "READY"
+  | "PLAYING"
+  | "PAUSED"
+  | "GAME_OVER";
 
 export type Axes = { forward: number; strafe: number };
 

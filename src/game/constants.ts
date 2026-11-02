@@ -33,6 +33,9 @@ export const GAME = {
     FOG_NEAR: 2,
   },
 
+  /** Sensibilidad base del ratón (el menú de pausa la multiplica). */
+  MOUSE_SENSITIVITY: 0.002,
+
   PLAYER: {
     HEIGHT: 1.8,
     RADIUS: 0.3,
@@ -78,11 +81,13 @@ export const GAME = {
     URL: "/models/Zona1/chunks/manifest.json",
     POS: { x: 0, y: 0, z: 0 },
     DEBUG: false,
-    /** Lluvia: las dos ventanas (sin cristal) de la sala del fusible, 2º piso. */
-    RAIN_WINDOWS: [
-      [-21.3, 6.8, 11.8],
-      [-21.3, 6.8, 3.8],
-    ] as const,
+  },
+
+  /** Lluvia en las ventanas: solo suena cerca de cada una (ver Game.updateRain). */
+  RAIN: {
+    /** A partir de esta distancia (m) ya no se oye. */
+    RANGE: 4.5,
+    VOLUME: 0.6,
   },
   UI: {
     ITEMS_TOTAL: 5,

@@ -60,6 +60,10 @@ export class ControlsSystem {
     return this.yawObject;
   }
 
+  setSensitivity(value: number) {
+    this.sensitivity = value;
+  }
+
   get isLocked() {
     return document.pointerLockElement === this.mount;
   }

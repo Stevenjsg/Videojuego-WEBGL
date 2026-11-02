@@ -26,6 +26,8 @@ import type { FluorescentLamp } from "@entities/FluorescentLamp";
 import { ZoneManager } from "@systems/ZoneManager";
 import { NavMeshSystem } from "@systems/NavMeshSystem";
 import { installVertexSnapping } from "@systems/PS1Effect";
+import { MusicDirector } from "@systems/MusicDirector";
+import { PauseMenu, type GameSettings } from "@systems/PauseMenu";
 import { downloadWithProgress } from "@core/download";
 import { loadGLBFromBlob } from "@core/gltfFromBlob";
 
@@ -88,6 +90,23 @@ export class Game {
   private footstepsPlaying = false;
 
   private ambienceAudio: THREE.Audio | null = null;
+  /** Fragmentos de música por zona según la tensión (ver MusicDirector). */
+  private music: MusicDirector | null = null;
+  /** Límites del apartamento (zona2), cuando está cargado. */
+  private apartmentBounds: THREE.Box3 | null = null;
+
+  // Menú de pausa (ESC) y opciones
+  private pauseMenu!: PauseMenu;
+  private pausedAt = 0;
+  /** Render a 240 px (opción del menú; requiere GAME.PS1.ENABLED). */
+  private retroResolution: boolean = GAME.PS1.ENABLED;
+
+  private flashlightClick: THREE.Audio | null = null;
+
+  // Lluvia por proximidad en cada ventana (se detectan al cargar los chunks)
+  private rainBuffer: AudioBuffer | null = null;
+  private rainSpots: { pos: THREE.Vector3; audio: THREE.PositionalAudio | null }[] =
+    [];
   private breathingAudio: THREE.Audio | null = null;
   private breathingPlaying = false;
 
@@ -147,6 +166,17 @@ export class Game {
     private mount: HTMLElement,
     private ui: GameUI,
   ) {
+    this.pauseMenu = new PauseMenu(
+      { sensitivity: 1, volume: 1, retroResolution: GAME.PS1.ENABLED },
+      {
+        onResume: () => this.resume(),
+        onRestart: () => location.reload(),
+        onChange: (s) => this.applySettings(s),
+      },
+    );
+    this.retroResolution =
+      GAME.PS1.ENABLED && this.pauseMenu.settings.retroResolution;
+
     this.renderer = this.createAndConfigureRenderer();
     const light = GAME.LIGHTING;
     this.scene = createScene({
@@ -187,6 +217,62 @@ export class Game {
     this.loop();
     await this.waitForStartScreen();
     this.state = "PLAYING";
+    this.applySettings(this.pauseMenu.settings);
+    this.bindPause();
+  }
+
+  // ── Pausa y opciones ─────────────────────────────────────────────────────
+
+  private bindPause() {
+    // Con el ratón capturado, ESC lo suelta el navegador: eso abre la pausa
+    // (y también cambiar de ventana, que también suelta la captura).
+    document.addEventListener("pointerlockchange", () => {
+      const locked = document.pointerLockElement !== null;
+      if (!locked && this.state === "PLAYING") this.pause();
+      // Solo se reanuda al recuperar la captura: sin ella no podrías moverte
+      // mientras el enemy sí.
+      else if (locked && this.state === "PAUSED") this.unpause();
+    });
+    // Sin captura, ESC llega como tecla normal.
+    window.addEventListener("keydown", (e) => {
+      if (e.code !== "Escape") return;
+      // El mismo ESC que soltó la captura no debe cerrar el menú al instante.
+      if (performance.now() - this.pausedAt < 300) return;
+      if (this.state === "PLAYING") this.pause();
+      else if (this.state === "PAUSED") this.resume();
+    });
+  }
+
+  private pause() {
+    this.state = "PAUSED";
+    this.pausedAt = performance.now();
+    this.pauseMenu.show();
+    this.audioListener?.context.suspend();
+  }
+
+  /** Pide la captura del ratón; la partida sigue en `unpause()` al lograrla. */
+  private resume() {
+    if (this.state !== "PAUSED") return;
+    // Chrome la rechaza ~1 s tras ESC: el menú sigue abierto y basta reintentar.
+    this.controls.lock();
+  }
+
+  private unpause() {
+    this.pauseMenu.hide();
+    this.state = "PLAYING";
+    this.audioListener?.context.resume();
+  }
+
+  private applySettings(s: GameSettings) {
+    this.controls?.setSensitivity(GAME.MOUSE_SENSITIVITY * s.sensitivity);
+    this.audioListener?.setMasterVolume(s.volume);
+
+    const retro = GAME.PS1.ENABLED && s.retroResolution;
+    if (retro !== this.retroResolution) {
+      this.retroResolution = retro;
+      this.renderer.domElement.style.imageRendering = retro ? "pixelated" : "";
+      this.onResize();
+    }
   }
 
   private waitForStartScreen() {
@@ -228,16 +314,16 @@ export class Game {
     if (GAME.PS1.ENABLED) {
       // Antes de compilar ningún material.
       installVertexSnapping(GAME.PS1.SNAP_GRID);
-      // Escalar el canvas de baja resolución sin suavizar.
-      r.domElement.style.imageRendering = "pixelated";
     }
+    // Escalar el canvas de baja resolución sin suavizar.
+    if (this.retroResolution) r.domElement.style.imageRendering = "pixelated";
     r.setPixelRatio(this.getPixelRatio());
     return r;
   }
 
   /** En modo PS1, el ratio que deja el render a GAME.PS1.HEIGHT px de alto. */
   private getPixelRatio() {
-    if (GAME.PS1.ENABLED) {
+    if (this.retroResolution) {
       return GAME.PS1.HEIGHT / Math.max(1, this.mount.clientHeight);
     }
     return Math.min(window.devicePixelRatio, GAME.PIXEL_RATIO_CAP);
@@ -277,6 +363,7 @@ export class Game {
       onChunk: (chunk) => {
         setupLevelMeshes(chunk);
         this.collectLOSMeshesFrom(chunk);
+        this.collectRainWindows(chunk);
       },
     });
     progress(0.1);
@@ -424,7 +511,10 @@ export class Game {
       ),
       gateRadius: GAME.LEVEL1.GATE_RADIUS,
       // Por cada chunk (core incluido) a medida que llega.
-      onChunk: (chunk) => this.collectLOSMeshesFrom(chunk),
+      onChunk: (chunk) => {
+        this.collectLOSMeshesFrom(chunk);
+        this.collectRainWindows(chunk);
+      },
     });
   }
 
@@ -473,7 +563,7 @@ export class Game {
       canLock: () =>
         this.state === "PLAYING" &&
         this.ui.overlay.classList.contains("hidden"),
-      sensitivity: 0.002,
+      sensitivity: GAME.MOUSE_SENSITIVITY,
       maxMouseDelta: 60,
       ignoreMouseEvents: 2,
     });
@@ -631,6 +721,11 @@ export class Game {
       this.footstepsAudio!.setVolume(0.35);
     });
 
+    this.music = new MusicDirector(this.audioListener, {
+      manifestUrl: "/music/manifest.json",
+      volume: 0.3,
+    });
+
     this.ambienceAudio = new THREE.Audio(this.audioListener);
     audioLoader.load(
       "/music/ambience/ambience-night-wildlife-a.mp3",
@@ -651,9 +746,15 @@ export class Game {
       this.breathingAudio!.setVolume(0.5);
     });
 
-    audioLoader.load("/music/sfx/fx_rain-on-windows-interior-a.mp3", (buffer) =>
-      this.spawnRainSounds(buffer),
-    );
+    audioLoader.load("/music/sfx/fx_rain-on-windows-interior-a.mp3", (buffer) => {
+      this.rainBuffer = buffer;
+    });
+
+    this.flashlightClick = new THREE.Audio(this.audioListener);
+    audioLoader.load("/music/sfx/fx_flashlight-click.mp3", (buffer) => {
+      this.flashlightClick!.setBuffer(buffer);
+      this.flashlightClick!.setVolume(0.5);
+    });
 
     audioLoader.load("/music/sfx/sfx_fluorescent-light.wav", (buffer) => {
       this.spawnFluorescentLights(spawns, buffer);
@@ -704,24 +805,76 @@ export class Game {
     }
   }
 
-  /** Lluvia en las dos ventanas sin cristal de la sala del fusible. */
-  private spawnRainSounds(buffer: AudioBuffer) {
-    for (const [x, y, z] of GAME.LEVEL1_ZONE1.RAIN_WINDOWS) {
-      const rain = new THREE.PositionalAudio(this.audioListener!);
-      rain.setBuffer(buffer);
-      rain.setLoop(true);
-      rain.setVolume(0.5);
-      // Lineal: se apaga del todo a 9 m, solo se oye en esa sala.
-      rain.setDistanceModel("linear");
-      rain.setRefDistance(1.5);
-      rain.setMaxDistance(9);
-      // Desfase para que las dos ventanas no suenen idénticas.
-      rain.offset = Math.random() * buffer.duration;
-      rain.position.set(x, y, z);
-      this.scene.add(rain);
+  /**
+   * Busca ventanas en un chunk recién cargado:
+   * - Zona1: paredes "SM_Wall_Window" → una fuente en el centro de cada una.
+   * - Apartamento: un único "Windows_Glass" con todos los cristales → se
+   *   agrupan sus vértices en celdas para sacar una fuente por ventana.
+   */
+  private collectRainWindows(root: THREE.Object3D) {
+    root.updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
 
-      if (this.audioResumed) rain.play();
-      else this.pendingAudios.push(rain);
+      if (/SM_Wall_Window/i.test(mesh.name)) {
+        this.addRainSpot(new THREE.Box3().setFromObject(mesh).getCenter(v));
+        return;
+      }
+      if (!/Windows_Glass/i.test(mesh.name)) return;
+
+      const pos = mesh.geometry.getAttribute("position");
+      const cells = new Map<string, { sum: THREE.Vector3; n: number }>();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+        const key = `${Math.floor(v.x / 2.5)},${Math.floor(v.y / 3)},${Math.floor(v.z / 2.5)}`;
+        const cell = cells.get(key) ?? { sum: new THREE.Vector3(), n: 0 };
+        cell.sum.add(v);
+        cell.n++;
+        cells.set(key, cell);
+      }
+      for (const { sum, n } of cells.values()) {
+        this.addRainSpot(sum.divideScalar(n));
+      }
+    });
+  }
+
+  private addRainSpot(p: THREE.Vector3) {
+    // Varias piezas de la misma ventana → una sola fuente.
+    if (this.rainSpots.some((s) => s.pos.distanceTo(p) < 1.5)) return;
+    this.rainSpots.push({ pos: p.clone(), audio: null });
+  }
+
+  /** Solo suenan las ventanas cercanas (se encienden/apagan por distancia). */
+  private updateRain() {
+    if (!this.rainBuffer || !this.audioListener) return;
+    if (this.audioListener.context.state !== "running") return;
+
+    const { RANGE, VOLUME } = GAME.RAIN;
+    const ear = this.player.position;
+    for (const spot of this.rainSpots) {
+      const d = spot.pos.distanceTo(ear);
+      if (d < RANGE + 0.5 && !spot.audio?.isPlaying) {
+        if (!spot.audio) {
+          const rain = new THREE.PositionalAudio(this.audioListener);
+          rain.setBuffer(this.rainBuffer);
+          rain.setLoop(true);
+          rain.setVolume(VOLUME);
+          // Lineal: silencio total a partir de RANGE.
+          rain.setDistanceModel("linear");
+          rain.setRefDistance(0.8);
+          rain.setMaxDistance(RANGE);
+          rain.position.copy(spot.pos);
+          this.scene.add(rain);
+          spot.audio = rain;
+        }
+        // Desfase para que dos ventanas cercanas no suenen idénticas.
+        spot.audio.offset = Math.random() * this.rainBuffer.duration;
+        spot.audio.play();
+      } else if (d > RANGE + 1.5 && spot.audio?.isPlaying) {
+        spot.audio.stop();
+      }
     }
   }
 
@@ -806,7 +959,12 @@ export class Game {
 
     // Toggle linterna
     if (this.input.justPressed("KeyF")) {
+      const wasOn = this.flashlight.isOn;
       this.flashlight.toggle();
+      if (this.flashlight.isOn !== wasOn && this.flashlightClick?.buffer) {
+        if (this.flashlightClick.isPlaying) this.flashlightClick.stop();
+        this.flashlightClick.play();
+      }
     }
 
     for (const lamp of this.fluorescentLamps) lamp.update();
@@ -841,6 +999,9 @@ export class Game {
 
     if (caught && this.hitGraceTimer <= 0) this.applyEnemyHit();
     this.updateFear(dt);
+    this.music?.setZone(this.currentMusicZone());
+    this.music?.update(dt, this.fear);
+    this.updateRain();
 
     this.debugger.update(this.player.position, this.camera, {
       flashlightOn: this.flashlight.isOn,
@@ -974,6 +1135,21 @@ export class Game {
     this.player.position.copy(this.hiding.returnPos);
     this.prevPos.copy(this.hiding.returnPos);
     this.hiding = null;
+  }
+
+  /** Cada pista solo suena en su zona: dentro del apartamento, zona2. */
+  private currentMusicZone() {
+    if (this.zone2Loaded && !this.apartmentBounds) {
+      this.apartmentBounds = this.zoneManager.getZoneBounds("ModernApartment");
+    }
+    const b = this.apartmentBounds;
+    const p = this.player.position;
+    const inApartment =
+      b !== null &&
+      p.x >= b.min.x && p.x <= b.max.x &&
+      p.z >= b.min.z && p.z <= b.max.z &&
+      p.y - GAME.PLAYER.HEIGHT < b.max.y;
+    return inApartment ? "zona2" : "zona1";
   }
 
   // ── Miedo ────────────────────────────────────────────────────────────────
@@ -1160,6 +1336,7 @@ export class Game {
     this.controls.unlock();
     if (this.breathingAudio?.isPlaying) this.breathingAudio.stop();
     if (this.ambienceAudio?.isPlaying) this.ambienceAudio.stop();
+    this.music?.stop();
     setGameOverUI(this.ui);
   }
 
