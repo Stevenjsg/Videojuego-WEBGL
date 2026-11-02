@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { Enemy } from "@entities/Enemy";
 import { CollisionSystem } from "@systems/CollisionSystem";
+import type { NavMeshSystem } from "@systems/NavMeshSystem";
 import type { EnemyBehaviorState } from "@entities/EnemyState";
 
 export type EnemySystemConfig = {
@@ -44,6 +45,12 @@ export type EnemyAdvancedInput = {
 const SAME_FLOOR_DY = 2.5;
 const TORSO_OFFSET_Y = 0.9;
 
+/** Recalcular el camino cada N segundos o si el objetivo se mueve > N m. */
+const REPATH_INTERVAL = 0.3;
+const REPATH_DISTANCE = 0.75;
+/** Distancia (XZ) a la que un waypoint se da por alcanzado. */
+const WAYPOINT_RADIUS = 0.25;
+
 export class EnemySystem {
   private speed: number;
   private catchDistance: number;
@@ -82,6 +89,14 @@ export class EnemySystem {
   private losFrame = 0;
   private cachedLOS = false;
 
+  // Navegación (null → línea recta hacia el objetivo)
+  private nav: NavMeshSystem | null = null;
+  private path: THREE.Vector3[] = [];
+  private pathIndex = 0;
+  private hasPath = false;
+  private pathTarget = new THREE.Vector3();
+  private repathTimer = 0;
+
   // Movimiento
   private tmpDir = new THREE.Vector3();
   private enemyPrev = new THREE.Vector3();
@@ -101,6 +116,13 @@ export class EnemySystem {
     this.detectionRange = cfg.detectionRange ?? 8;
     this.detectionRangeRunning = cfg.detectionRangeRunning ?? 14;
     this.playerRadius = cfg.playerRadius ?? 0.3;
+  }
+
+  /** Navmesh de la zona activa; null para moverse en línea recta. */
+  setNavMesh(nav: NavMeshSystem | null) {
+    this.nav = nav;
+    this.hasPath = false;
+    this.repathTimer = 0;
   }
 
   /** Congela al enemy durante `seconds` segundos (tras un golpe, etc.) */
@@ -206,7 +228,7 @@ export class EnemySystem {
         : 0;
     finalSpeed *= 1 + 0.5 * ratio;
 
-    this.tmpDir.copy(target).sub(this.enemy.position);
+    this.tmpDir.copy(this.nextWaypoint(target, dt)).sub(this.enemy.position);
     this.tmpDir.y = 0;
 
     if (this.tmpDir.lengthSq() <= 1e-4) {
@@ -218,6 +240,34 @@ export class EnemySystem {
     this.enemy.position.addScaledVector(this.tmpDir, finalSpeed * dt);
     this.enemy.root.rotation.y = Math.atan2(this.tmpDir.x, this.tmpDir.z);
     this.enemy.setMoveSpeed(finalSpeed);
+  }
+
+  /** Siguiente punto hacia el que caminar siguiendo la navmesh. */
+  private nextWaypoint(target: THREE.Vector3, dt: number): THREE.Vector3 {
+    if (!this.nav) return target;
+
+    this.repathTimer -= dt;
+    if (
+      this.repathTimer <= 0 ||
+      this.pathTarget.distanceToSquared(target) >
+        REPATH_DISTANCE * REPATH_DISTANCE
+    ) {
+      this.repathTimer = REPATH_INTERVAL;
+      this.pathTarget.copy(target);
+      this.hasPath = this.nav.findPath(this.enemy.position, target, this.path);
+      this.pathIndex = 1; // path[0] es la posición actual
+    }
+    if (!this.hasPath || this.path.length < 2) return target;
+
+    const last = this.path.length - 1;
+    while (this.pathIndex < last) {
+      const wp = this.path[this.pathIndex];
+      const dx = wp.x - this.enemy.position.x;
+      const dz = wp.z - this.enemy.position.z;
+      if (dx * dx + dz * dz > WAYPOINT_RADIUS * WAYPOINT_RADIUS) break;
+      this.pathIndex++;
+    }
+    return this.path[Math.min(this.pathIndex, last)];
   }
 
   private tickSearch(dt: number, input: EnemyAdvancedInput) {

@@ -8,13 +8,15 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "chunk-maps": "node scripts/chunk-maps.mjs"
+    "chunk-maps": "node scripts/chunk-maps.mjs",
+    "optimize-models": "node scripts/optimize-models.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.20.0",
   "dependencies": {
+    "recast-navigation": "0.43.1",
     "three": "^0.182.0",
     "vite": "7.3.1"
   },
